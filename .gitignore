@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Local artifacts and large binaries
+Alvis/.vscode-server/
+containers/*.sif
+temp/
+temp_c-GAN/
+c-GAN_code/temp/
