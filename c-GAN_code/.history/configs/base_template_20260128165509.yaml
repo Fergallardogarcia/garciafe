@@ -1,0 +1,159 @@
+SERVER_CONFIGS:
+    RANDOM_SEED: 333
+    SERVER_TYPE: FILTER                 # Options: [NORMAL, FILTER]
+    RUN_DEVICE: auto                    # Options: [auto, cpu, cuda]
+    EVALUATE_SERVER: True               # Options: [True, False]
+    NUM_TRAIN_ROUND: 10
+    MIN_NUM_CLIENTS: 100
+    TRAINING_SAMPLE_FRACTION: 0.1
+    MIN_TRAINING_SAMPLE_SIZE: 10
+    EVALUATE_SAMPLE_FRACTION: 0.01
+    MIN_EVALUATE_SAMPLE_SIZE: 1
+    CLIENTS_MANAGER: SIMPLE             # Options: [SIMPLE] 
+    AGGREGATE_STRAT: FED-AVERAGE        # Options: [FED-AVERAGE, FED-ROBUSTAVG, FED-MEDIAN, FED-GEOMED, FED-TRIMAVG]
+    AGGR_STRAT_ARGS:
+        variation: null
+
+    # Configurations related to  
+    # filteration based defense
+    FILTER_CONFIGS:
+        FILTER_TYPE: GAN-FILTERING             # Options: [GAN-FILTERING, KRUM-FILTERING]
+        HYPER_PARAM:                   
+            SKIP_ROUNDS: 20
+            GEN_ARGS:
+                MODEL_NAME: TEST-TANH                   # Options: [TEST-TANH, TEST-SIGMOID, GEN-DCGAN]
+                TRAIN: True
+                SET_WEIGHTS: False
+                WEIGHT_PATH: ./temp/weights/gen_weights
+                LATENT_SIZE: 100
+                NUM_CLASSES: 10
+                OUT_CHANNEL: 1                          # Options: [MNIST=1, CIFAR-10=3]
+                OUTPUT_SIZE: 32                         # Options: [MNIST=32, CIFAR-10=32]
+            TRAIN_GAN_PARAMS:
+                DEVICE: auto                            # Options: [auto, cpu, cuda]
+                CRITERION: CROSSENTROPY                 # Options: [CROSSENTROPY, NLLL]
+                OPTIMIZER: ADAM                         # Options: [ADAM, SGD]
+                ITERATION: 10_000
+                BATCH_SIZE: 128
+                LEARN_RATE: 0.00001
+            FILTER_ARGS:
+                NORM_LIMIT: 40.0
+                SAMPLES_PER_CLASS: 1_000 
+                FILTERATION_TYPE: BASELINE-OVERALL      # Options: [BASELINE-OVERALL, BASELINE-BYCLASS, MEAN-LOSS, MEDIAN-LOSS, MEDIAN-ACCURACY, CLUSTER-ACCURACY, CLUSTER-LOSS, MIXED-LOSS, MIXED-ACCURACY]
+                BASELINE_OVERALL_MIN_ACC: 0.80
+                BASELINE_BYCLASS_MIN_ACC: [0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85]
+                CLUSTER_BYCLASS_THRESHOLD: 0.50
+
+CLIENT_CONFIGS:
+    RUN_DEVICE: auto                    # Options: [auto, cpu, cuda]
+    EVALUATE: False
+    LOCAL_EPCH: 10
+    BATCH_SIZE: 128
+    CRITERION: CROSSENTROPY             # Options: [CROSSENTROPY, NLLL]
+    INITIAL_LR: 0.01
+    LEARN_RATE: 0.1
+    WARMUP_RDS: 10
+    LR_SCHEDULER: STATIC                # [STATIC, 3-STEP, CUSTOM]
+    SCHEDULER_ARGS:
+        milestones: [0.25, 0.50, 0.75]
+        gamma: 0.5
+    OPTIMIZER: SGD                      # Options: [ADAM, SGD]
+    OPTIM_ARG:
+        momentum: 0.9
+        nesterov: True
+        weight_decay: 0.0001
+
+DATASET_CONFIGS:
+    DATASET_NAME: CIFAR-10              # Options: [MNIST, EMNIST, FMNIST, CIFAR-10]
+    DATASET_PATH: ./temp/CIFAR
+    DATASET_DOWN: False
+    SPLIT: True
+    SPLIT_METHOD: DIRICHLET-BY-CLASS    # Options: [DIRICHLET-BY-CLASS, DIRICHLET-BY-SAMPLES]
+    DIRICHLET_ALPHA: 100.0
+    MIN_PARTITION_SIZE: 0               # Specify minimum sample size per partition. 
+                                        # Performs repetitions to satisfy this value.
+    CLASSES_PER_WORKER: 0               # Number of classes per worker, used with 
+                                        # DIRICHLET-BY-SAMPLES, 0 means all classes.
+    RANDOM_SEED: 333
+
+MODEL_CONFIGS:
+    MODEL_NAME: RESNET-18-CUSTOM        # Options: [
+                                        #       SIMPLE-MLP, SIMPLE-CNN, LENET-1CH, LENET-1CH-BN
+                                        #       LENET-3CH, LENET-3CH-BN, PRERESNET-20
+                                        #       RESNET-18-CUSTOM, RESNET-18-PYTORCH
+                                        #   ]
+    NUM_CLASSES: 10
+                                        # Path of pre-trained weights, set to null
+                                        # to skip pre-trained weight initialization.
+    WEIGHT_PATH: null
+
+OUTPUT_CONFIGS:
+    RESULT_LOG_PATH: ./temp/run_results/
+
+EXPERIMENT_CONFIGS:                     # Normally used to pass configs to malicious clients
+    MAL_SHARED_DATA: False              # Whether malicious clients have shared dataset (collusion)
+    MAL_CLIENT_FRAC: 0.25
+    MAL_CLIENT_TYPE: RANDOM             # Options: [
+                                        #       RANDOM, MPAF, BACKDOOR,
+                                        #       SIGNFLIP, LABELFLIP
+                                        #   ]
+
+    MAL_HYPER_PARAM:                    # Common malicious attack configs
+        ATTACK_ROUND: 20                # Rounds after which to start the malicious attack
+        ATTACK_RATIO: 1.0
+
+        RANDOM_CONFIG:                  # NOISE specific attack configs
+            TYPE: UNIFORM-2             # Options: [UNIFORM, NORMAL]
+                                        # In case of normal distribution specify the following 
+                                        # additional parameters
+            NORM_SCALE: 5.0
+            LOCATION: 0                 # The location parameter i.e. the mean
+            SCALE: 1.0                  # The scale parameter i.e. the variance
+
+        SIGNFLIP_CONFIG:                # SIGNFLIP specific attack configs
+            SCALE_FACTOR: 5.0
+
+        LABELFLIP_CONFIG:               # TARGETED_LABELFLIP specific attack configs
+            FLIP_VERSION: v1
+            SCALE_FACTOR: 4.0
+            LOCAL_EPOCHS: 10
+            LEARN_RATE: 0.01
+            TARGETS:
+                - SOURCE_LABEL: 0
+                  TARGET_LABEL: 1
+                - SOURCE_LABEL: 1
+                  TARGET_LABEL: 2
+                - SOURCE_LABEL: 2
+                  TARGET_LABEL: 3
+                - SOURCE_LABEL: 3
+                  TARGET_LABEL: 4
+                - SOURCE_LABEL: 4
+                  TARGET_LABEL: 5
+                - SOURCE_LABEL: 5
+                  TARGET_LABEL: 6
+                - SOURCE_LABEL: 6
+                  TARGET_LABEL: 7
+                - SOURCE_LABEL: 7
+                  TARGET_LABEL: 8
+                - SOURCE_LABEL: 8
+                  TARGET_LABEL: 9
+                - SOURCE_LABEL: 9
+                  TARGET_LABEL: 0
+
+        BACKDOOR_CONFIG:                # BACKDOOR specific attack configs
+            BACK_VERSION: v1
+            SCALE_FACTOR: 1.0
+            LEARN_RATE: 0.01
+            LOCAL_EPOCHS: 10
+            V1_SPECS:
+                TARGETS:
+                    -   SOURCE_LABEL: 0
+                        TARGET_LABEL: 2
+            TRIGGER_TYPE:  DEQUAL        # Options: [EQUAL(=), DEQUAL(==), PLUS(+), DPLUS(++)]
+            TRIGGER_SPECS:
+                WIDTH: 7
+                HEIGHT: 1
+                GAP_X: 1
+                GAP_Y: 1
+                SHIFT_X: 2
+                SHIFT_Y: 2

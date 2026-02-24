@@ -1,0 +1,113 @@
+
+from typing import List, Tuple, Optional
+
+import torch
+
+# from fedml.strategy.strategies.aggregate import _flatten_weights
+from fedml.common import Parameters
+
+from .filter import Filter
+
+class KrumFilter(Filter):
+    def __init__(self, num_malicious_clients, num_clients_to_keep, **kwargs) -> None:
+        self.num_malicious_clients = num_malicious_clients
+        self.num_clients_to_keep = num_clients_to_keep
+
+    @property
+    def filter_type(self):
+        """Returns current filter's type."""
+        return "KRUM"
+
+
+    def server_fit_round_after(self):
+        return self.filter_round, self.log_filter_stats
+    
+
+
+    def filter_round(self, server_round: int, results):
+        (selected_indexes, client_stats) = self.filter_updates(
+            client_weights=[(fit_res.parameters, fit_res.num_examples) for _, fit_res in results],
+            server_round=server_round,
+        )
+        return selected_indexes, client_stats
+    
+    def log_filter_stats(self, metrics_aggregated, client_stats, results):
+        # Logging filtering stats of clients
+        if self.filter_type == "GAN" and client_stats is not None:
+            metrics_aggregated["filter_loss"] = dict()
+            metrics_aggregated["filter_accu_all"] = dict()
+            metrics_aggregated["filter_accu_cls"] = dict()
+        
+            # Compile / collect results
+            client_ids = [res.metrics["client_id"] for _, res in results]
+            for index, cid in enumerate(client_ids):
+                metrics_aggregated["filter_loss"][f"client_{cid}"] = client_stats["avg_loss"][index]
+                metrics_aggregated["filter_accu_all"][f"client_{cid}"] = client_stats["accu_all"][index]
+                metrics_aggregated["filter_accu_cls"][f"client_{cid}"] = client_stats["accu_cls"][index]
+
+        if self.filter_type == "KRUM":
+            metrics_aggregated["distances"] = dict()
+
+            # Compile / collect results
+            client_ids = [res.metrics["client_id"] for _, res in results]
+            for index, cid in enumerate(client_ids):
+                metrics_aggregated["distances"][f"client_{cid}"] = client_stats["distances"][index, :]
+        return metrics_aggregated
+
+
+    def server_tasks(self, global_weights: Parameters, server_round: int):
+        return
+
+    def filter_updates(
+            self, 
+            client_weights: List[Tuple[Parameters, int]], 
+            server_round: int
+        ) -> Tuple[List[int], Optional[List[Tuple]]]:
+        """Function to select updates based on (multi) krum filtering"""
+
+        # Create a list of weights and ignore the number of examples
+        weights_list = [weights for weights, _ in client_weights]
+
+        # Compute distances between vectors
+        distance_matrix = _compute_distances(weights_list)
+
+        # For each client, take the n-f-2 closest parameters vectors
+        num_closest = max(1, len(weights_list) - self.num_malicious_clients - 2)
+        sorted_indices = torch.argsort(distance_matrix, dim=1)
+
+        # Compute the score for each client, that is the sum of the distances
+        # of the n-f-2 closest parameters vectors
+        scores = torch.sum(
+            distance_matrix.gather(1, sorted_indices[:, 1 : (num_closest + 1)]), dim=1
+        )
+
+        if self.num_clients_to_keep > 0:
+            # Choose to_keep clients and return their average (MultiKrum)
+            best_indices = torch.argsort(scores, descending=False)[:self.num_clients_to_keep]  # noqa: E203
+        else:
+            best_indices = [torch.argmin(scores).item()]
+            # best_results = [results[i] for i in best_indices]
+            # return aggregate(best_results)
+        
+        stats = {
+            "distances": distance_matrix
+        }
+
+        # Return the model parameters that minimize the score (Krum)
+        return best_indices, stats
+
+def _compute_distances(weights: list[Parameters]) -> torch.Tensor:
+    """Compute distances between vectors.
+
+    Input: weights - list of weights vectors
+    Output: distances - matrix distance_matrix of squared distances between the vectors
+    """
+    flat_w = torch.stack(weights, dim=0)
+
+    distance_matrix = torch.zeros((len(weights), len(weights)))
+    for i, flat_w_i in enumerate(flat_w):
+        for j, flat_w_j in enumerate(flat_w):
+            delta = flat_w_i - flat_w_j
+            norm = torch.linalg.norm(delta)
+            distance_matrix[i, j] = norm**2
+    return distance_matrix

@@ -1,0 +1,56 @@
+"""Server strategy."""
+
+from abc import ABC, abstractmethod
+from typing import List, Tuple, Optional
+
+from fedml.common.typing import Parameters
+
+class Filter(ABC):
+    @property
+    def filter_type(self) -> str:
+        """Filter type. Used to distinguish between different types of filters
+        """
+        return "BASE"
+
+    @abstractmethod
+    def filter_updates(
+        self, 
+        client_weights: List[Tuple[Parameters, int]],
+        server_round: int
+    ) -> Tuple[List[int], Optional[List[Tuple]]]:
+        """Filter updates given global weights and client updates.
+        """
+
+    @abstractmethod
+    def server_tasks(
+        self,
+        global_weights: Parameters,
+        server_round: int,
+    ):
+        """Perform any server side tasks that can run in parallel to client 
+        training. Useful to perform GAN training in parallel to client training.
+        """
+
+    
+    def server_task_fit_round_before(
+              self, 
+              global_parameters, 
+              server_round: int, 
+              executor,
+              client_manager: ClientManager
+    ):
+        # Start training of generator from current model parameters
+        submitted_fs = {
+            executor.submit(self.train_gen, global_parameters, server_round)
+        }
+
+        # Wait until malicious generator is trained
+        finished_fs, _ = concurrent.futures.wait(
+            fs=submitted_fs,
+            timeout=None,  # Handled in the respective communication stack
+        )
+
+        #Broadcast gen model to clients
+        self.broadcast_gen_model(client_manager) #Probably should add security checker for server iteration
+
+        return submitted_fs

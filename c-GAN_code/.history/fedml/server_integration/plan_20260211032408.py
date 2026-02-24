@@ -1,0 +1,104 @@
+"""Server strategy."""
+
+
+from abc import ABC, abstractmethod
+from multiprocessing.connection import Client
+from typing import Optional
+
+
+from fedml.server import client_manager
+from fedml.strategy import Strategy
+from fedml.common.typing import Parameters, Scalar
+from fedml.server.client_manager import ClientManager
+from fedml.defenses.filters.filter import Filter
+
+
+
+class Plan(ABC):
+    """Abstract base class for server strategy implementations."""
+
+
+    def __init__(self,
+                 client_manager: Optional[ClientManager] = None,
+                 agg_strat: Optional[Strategy] = None,
+                 filter_strat: Optional[Filter] = None,
+    ):
+        self.client_manager = client_manager
+        self.agg_strat = agg_strat 
+        self.filter_strat = filter_strat
+
+
+    @abstractmethod
+    def initialize_parameters(
+        self, client_manager: ClientManager
+    ) -> Optional[Parameters]:
+        """Initialize the (global) model parameters.
+
+        Parameters
+        ----------
+        client_manager : ClientManager
+            The client manager which holds all currently connected clients.
+
+        Returns
+        -------
+        parameters : Optional[Parameters]
+            If parameters are returned, then the server will treat these as the
+            initial global model parameters.
+        """
+
+    @abstractmethod
+    def configure_fit(
+        self, server_round: int, parameters: Parameters, client_manager: ClientManager
+    ):
+        """Configure the next round of training.
+        """
+
+    @abstractmethod
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results,
+        failures,
+    ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
+        """Aggregate training results.
+        """
+
+    @abstractmethod
+    def configure_evaluate(
+        self, server_round: int, parameters: Parameters, client_manager: ClientManager
+    ):
+        """Configure the next round of evaluation.
+        """
+
+    @abstractmethod
+    def aggregate_evaluate(
+        self,
+        server_round: int,
+        results,
+        failures,
+    ):
+        """Aggregate evaluation results.
+        """
+
+    @abstractmethod
+    def evaluate(
+        self, server_round: int, parameters: Parameters
+    ) -> Optional[tuple[float, dict[str, Scalar]]]:
+        """Evaluate the current model parameters.
+
+        This function can be used to perform centralized (i.e., server-side) evaluation
+        of model parameters.
+
+        Parameters
+        ----------
+        server_round : int
+            The current round of federated learning.
+        parameters: Parameters
+            The current (global) model parameters.
+
+        Returns
+        -------
+        evaluation_result : Optional[Tuple[float, Dict[str, Scalar]]]
+            The evaluation result, usually a Tuple containing loss and a
+            dictionary containing task-specific metrics (e.g., accuracy).
+        """

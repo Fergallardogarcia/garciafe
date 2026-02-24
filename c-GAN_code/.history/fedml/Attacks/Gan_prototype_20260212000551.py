@@ -1,0 +1,2 @@
+
+class GAN_prot
