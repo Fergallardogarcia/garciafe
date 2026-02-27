@@ -181,3 +181,12 @@ containers/*.sif
 temp/
 temp_c-GAN/
 c-GAN_code/temp/
+plots_Fer.py
+c-GAN_code/configs/02_mnist_benign_oth.yaml
+Plotting/02_Results_Heatmaps.ipynb
+Experiment-Configs/02_mnist_benign_oth.yaml
+Experiment-Configs/build_experiment_configs.py
+Plotting/plot_tools/plot_tools.py
+Plotting/plot_tools/plot_heatmap.py
+.history
+
