@@ -3,13 +3,13 @@
 #SBATCH -t 0-04:00:00
 #SBATCH --gpus-per-node=V100:2
 #SBATCH -N 1 --ntasks=1
-#SBATCH -J less_strength
-#SBATCH --array=318-320
+#SBATCH -J control
+#SBATCH --array=321
 #SBATCH --output "temp/logs/%x_%a.out"
 #SBATCH --error "temp/logs/%x_%a.err"
 
 
-EXP_TYPE="less_strength" #["less_strength", "more_samples", "control"]
+EXP_TYPE="control" #["less_strength", "more_samples", "control"]
 SUBSCRIPT="0"
 
 
