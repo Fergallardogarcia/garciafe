@@ -1,0 +1,143 @@
+JobID           JobName  Partition    Account  AllocCPUS      State ExitCode              Submit 
+------------ ---------- ---------- ---------- ---------- ---------- -------- ------------------- 
+6151244_303  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_303+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:13:20 
+6151244_303+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:13:20 
+6151244_303+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:13:21 
+6151244_304  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_304+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:32:07 
+6151244_304+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:32:07 
+6151244_304+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:32:08 
+6151244_305  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_305+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:48:16 
+6151244_305+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:48:16 
+6151244_305+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:48:17 
+6151244_306  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_306+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:54:49 
+6151244_306+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:54:49 
+6151244_306+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-17T22:54:50 
+6151244_307  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_307+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-17T23:17:30 
+6151244_307+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-17T23:17:30 
+6151244_307+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-17T23:17:31 
+6151244_308  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_308+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-17T23:35:38 
+6151244_308+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-17T23:35:38 
+6151244_308+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-17T23:35:38 
+6151244_309  more_samp+      alvis naiss2025+         16  COMPLETED      0:0 2026-03-17T21:11:21 
+6151244_309+      batch            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:08:20 
+6151244_309+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:08:20 
+6151244_309+  deploy.sh            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:08:20 
+6151276_1    more_samp+      alvis naiss2025+         16     FAILED      1:0 2026-03-17T21:22:40 
+6151276_1.b+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T00:28:26 
+6151276_1.e+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:28:26 
+6151276_1.0   deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T00:28:27 
+6151280_1    same_samp+      alvis naiss2025+         16     FAILED      1:0 2026-03-17T21:23:50 
+6151280_1.b+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T00:28:56 
+6151280_1.e+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:28:56 
+6151280_1.0   deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T00:28:57 
+6151287_995  same_samp+      alvis naiss2025+         16     FAILED      1:0 2026-03-17T21:25:45 
+6151287_995+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T00:29:26 
+6151287_995+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:29:26 
+6151287_995+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T00:29:27 
+6151296_999  more_samp+      alvis naiss2025+         16     FAILED      1:0 2026-03-17T21:29:00 
+6151296_999+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T00:29:57 
+6151296_999+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T00:29:57 
+6151296_999+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T00:29:57 
+6156655_1    m_s_large+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:10:51 
+6156655_1.b+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:03 
+6156655_1.e+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:11:03 
+6156655_1.0   deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:04 
+6156655_95   m_s_large+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:10:51 
+6156655_95.+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:03 
+6156655_95.+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:11:03 
+6156655_95.0  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:04 
+6156655_99   m_s_large+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:10:51 
+6156655_99.+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:03 
+6156655_99.+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:11:03 
+6156655_99.0  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:04 
+6156655_995  m_s_large+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:10:51 
+6156655_995+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:03 
+6156655_995+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:11:03 
+6156655_995+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:04 
+6156655_999  m_s_large+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:10:51 
+6156655_999+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:33 
+6156655_999+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:11:33 
+6156655_999+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:11:34 
+6156682_310         m_s      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:13:19 
+6156682_310+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:13:34 
+6156682_310+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:13:34 
+6156682_310+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:13:35 
+6156725_1    same_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:17:27 
+6156725_1.b+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:35 
+6156725_1.e+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:17:35 
+6156725_1.0   deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:36 
+6156725_95   same_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:17:27 
+6156725_95.+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:35 
+6156725_95.+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:17:35 
+6156725_95.0  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:36 
+6156725_99   same_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:17:27 
+6156725_99.+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:35 
+6156725_99.+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:17:35 
+6156725_99.0  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:37 
+6156725_995  same_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:17:27 
+6156725_995+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:35 
+6156725_995+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:17:35 
+6156725_995+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:17:36 
+6156725_999  same_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:17:27 
+6156725_999+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:18:06 
+6156725_999+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:18:06 
+6156725_999+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:18:06 
+6156731      more_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:18:14 
+6156731.bat+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:18:36 
+6156731.ext+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:18:36 
+6156731.0     deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:18:36 
+6156733_1        more_s      alvis naiss2025+         16    RUNNING      0:0 2026-03-18T16:18:48 
+6156733_1.b+      batch            naiss2025+         16    RUNNING      0:0 2026-03-18T16:19:06 
+6156733_1.e+     extern            naiss2025+         16    RUNNING      0:0 2026-03-18T16:19:06 
+6156733_1.0   deploy.sh            naiss2025+         16    RUNNING      0:0 2026-03-18T16:19:06 
+6156739_1    same_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:19:35 
+6156739_1.b+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:19:36 
+6156739_1.e+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:19:36 
+6156739_1.0   deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:19:37 
+6156823_1    more_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:22:05 
+6156823_1.b+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:07 
+6156823_1.e+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:22:07 
+6156823_1.0   deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:08 
+6156823_95   more_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:22:05 
+6156823_95.+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:07 
+6156823_95.+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:22:07 
+6156823_95.0  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:08 
+6156823_99   more_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:22:05 
+6156823_99.+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:07 
+6156823_99.+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:22:07 
+6156823_99.0  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:08 
+6156823_995  more_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:22:05 
+6156823_995+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:37 
+6156823_995+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:22:37 
+6156823_995+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:38 
+6156823_999  more_s_lr+      alvis naiss2025+         16     FAILED      1:0 2026-03-18T16:22:05 
+6156823_999+      batch            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:37 
+6156823_999+     extern            naiss2025+         16  COMPLETED      0:0 2026-03-18T16:22:37 
+6156823_999+  deploy.sh            naiss2025+         16     FAILED      1:0 2026-03-18T16:22:38 
+6156846_1    more_s_lr+      alvis naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:31 
+6156846_1.b+      batch            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:37 
+6156846_1.e+     extern            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:37 
+6156846_1.0   deploy.sh            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:38 
+6156846_95   more_s_lr+      alvis naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:31 
+6156846_95.+      batch            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:37 
+6156846_95.+     extern            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:37 
+6156846_95.0  deploy.sh            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:38 
+6156846_99   more_s_lr+      alvis naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:31 
+6156846_99.+      batch            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:37 
+6156846_99.+     extern            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:37 
+6156846_99.0  deploy.sh            naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:38 
+6156846_995  more_s_lr+      alvis naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:31 
+6156846_995+      batch            naiss2025+         16    RUNNING      0:0 2026-03-18T16:32:10 
+6156846_995+     extern            naiss2025+         16    RUNNING      0:0 2026-03-18T16:32:10 
+6156846_995+  deploy.sh            naiss2025+         16    RUNNING      0:0 2026-03-18T16:32:11 
+6156846_999  more_s_lr+      alvis naiss2025+         16    RUNNING      0:0 2026-03-18T16:23:31 
+6156846_999+      batch            naiss2025+         16    RUNNING      0:0 2026-03-18T17:17:05 
+6156846_999+     extern            naiss2025+         16    RUNNING      0:0 2026-03-18T17:17:05 
+6156846_999+  deploy.sh            naiss2025+         16    RUNNING      0:0 2026-03-18T17:17:06 
+6156854_[1]  same_s_lr+      alvis naiss2025+          0    PENDING      0:0 2026-03-18T16:23:59 

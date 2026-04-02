@@ -16,6 +16,14 @@ class History:
         self.metrics_distributed_fit: dict[str, list[tuple[int, Scalar]]] = {}
         self.metrics_distributed: dict[str, list[tuple[int, Scalar]]] = {}
         self.metrics_centralized: dict[str, list[tuple[int, Scalar]]] = {}
+        self.metrics_defense_filter: dict[str, list[tuple[int, Scalar]]] = {}
+
+    def add_metrics_filter(self, server_round: int, metrics: dict[str, Scalar], client_id:int) -> None:
+        """Add metrics entries (from defense filter)."""
+        for key in metrics:
+            if key not in self.metrics_defense_filter:
+                self.metrics_defense_filter[key] = []
+            self.metrics_defense_filter[key].append((server_round, metrics[key], client_id))
 
     def add_loss_distributed(self, server_round: int, loss: float) -> None:
         """Add one loss entry (from distributed evaluation)."""
@@ -106,6 +114,10 @@ class History:
         if self.metrics_centralized:
             rep += "History (metrics, centralized):\n" + pprint.pformat(
                 self.metrics_centralized
+            )
+        if self.metrics_defense_filter:
+            rep += "History (metrics, defense filter):\n" + pprint.pformat(
+                self.metrics_defense_filter
             )
         return rep
 

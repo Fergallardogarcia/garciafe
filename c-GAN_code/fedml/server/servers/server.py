@@ -192,6 +192,10 @@ class Server:
             len(results),
             len(failures),
         )
+        for client_id, res in results:
+            log(INFO, f"Eval Client (real): {client_id}:  metrics={res.metrics}")
+            
+            # client, model, device, ins in client_instructions
 
         # Aggregate the evaluation results
         aggregated_result: tuple[

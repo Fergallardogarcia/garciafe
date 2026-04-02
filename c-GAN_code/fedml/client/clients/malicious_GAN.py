@@ -3,6 +3,7 @@
 import copy
 import json
 import timeit
+from xml.parsers.expat import model
 from fedml import modules
 from fedml.common.typing import Code
 from fedml.defenses.filters.gan_filter import generate_dataset
@@ -142,8 +143,8 @@ class GanMaliciousClient(HonestClient):
 
         # coeff_ real and coeff_synth are used to equalize strength of real and synthetic data in the mixed loss regardless of Data Size
         # Requires handling of size 0.
-        coeff_real = (num_real_samples + num_synth_samples)/(2*num_real_samples)
-        coeff_synth = (num_real_samples + num_synth_samples)/(2*num_synth_samples)
+        coeff_real = (num_real_samples + num_synth_samples)/(num_real_samples)
+        coeff_synth = (num_real_samples + num_synth_samples)/(num_synth_samples)
         alpha = num_synth_samples/len(trainset) # Adjusting for different dataset sizes, if needed. 
         return trainset_mixed, coeff_real, coeff_synth
     
@@ -162,6 +163,10 @@ class GanMaliciousClient(HonestClient):
         criterion_str = config["criterion"]
         optim_kwargs = dict(json.loads(config["optim_kwargs"]))
         perform_evals = config["perform_evals"]
+
+        gen_configs= self.attack_config["GAN_ATTACK_CONFIG"]["HYPER_PARAM"]["GEN_ARGS"]
+        num_classes= gen_configs["NUM_CLASSES"]
+        latent_size = gen_configs["LATENT_SIZE"]
 
 
         attack = np.random.random() < self.attack_config["ATTACK_RATIO"]
@@ -197,12 +202,19 @@ class GanMaliciousClient(HonestClient):
 
         # Train model
         trainloader = torch.utils.data.DataLoader(
-            mixed_trainset, batch_size=batch_size, shuffle=True, drop_last=False
+            self._trainset, batch_size=batch_size, shuffle=True, drop_last=False
         )
 
+
+        # # Train model
+        # trainloader = torch.utils.data.DataLoader(
+        #     mixed_trainset, batch_size=batch_size, shuffle=True, drop_last=False
+        # )
+
         criterion = modules.get_criterion(
-            criterion_str=criterion_str, reduction="none"
+            criterion_str=criterion_str 
         )
+        #, reduction="none"
         optimizer = modules.get_optimizer(
             optimizer_str=optimizer_str,            
             local_model=model,
@@ -210,18 +222,35 @@ class GanMaliciousClient(HonestClient):
             **optim_kwargs,
         )
         
-        num_examples = train_mixed_data(
-            model=model, 
+
+        num_examples = train_malGAN_discriminator(
+            model=model,
+            gen_model= self.gen_model,
             trainloader=trainloader, 
             epochs=local_epochs, 
             learning_rate=learning_rate,
             criterion=criterion,
             optimizer=optimizer,
             device=device,
+            num_classes=num_classes,
+            latent_size=latent_size,
             coeff_real=coeff_real,
             coeff_synth=coeff_synth,
             synth_strength_ratio=self.synth_strength_ratio,
         )
+
+        # num_examples = train_mixed_data(
+        #     model=model, 
+        #     trainloader=trainloader, 
+        #     epochs=local_epochs, 
+        #     learning_rate=learning_rate,
+        #     criterion=criterion,
+        #     optimizer=optimizer,
+        #     device=device,
+        #     coeff_real=coeff_real,
+        #     coeff_synth=coeff_synth,
+        #     synth_strength_ratio=self.synth_strength_ratio,
+        # )
 
         # Get weights from the model and stage back to CPU if running as process
         parameters_updated = model.get_weights()
@@ -265,6 +294,62 @@ class GanMaliciousClient(HonestClient):
                 "client_type": self.client_type,
             },
         )
+
+def train_malGAN_discriminator(
+        model: nn.Module,
+        gen_model: nn.Module,
+        trainloader: torch.utils.data.DataLoader,
+        epochs: int,
+        device: str,  # pylint: disable=no-member
+        learning_rate: float,
+        criterion,
+        optimizer,
+        num_classes: int,
+        latent_size: int,
+        coeff_real: float,
+        coeff_synth: float,
+        synth_strength_ratio: float,
+    ) -> None:
+    
+
+    num_examples = 0
+    model.train()
+    for epoch in range(epochs):  # loop over the dataset multiple times
+        running_real_loss = 0.0
+        running_fake_loss = 0.0
+        for i, data in enumerate(trainloader):
+            images, labels = data[0].to(device), data[1].to(device)
+
+            # Labels
+            real_labels = labels
+            fake_labels = labels
+
+            # --- Train on real data ---
+            optimizer.zero_grad()
+            real_outputs = model(images)
+            real_loss = -(1 - synth_strength_ratio) * criterion(real_outputs, real_labels)
+            real_loss.backward()
+
+            # --- Train on fake data ---
+            # gen_model(current_z, current_l)
+            input_znoises = torch.randn(labels.size(0), latent_size).to(device)
+            
+            fake_data = gen_model(input_znoises, fake_labels).detach()  # detach to avoid training generator here
+            fake_outputs = model(fake_data)
+            fake_loss = synth_strength_ratio * criterion(fake_outputs, fake_labels)
+            fake_loss.backward()
+
+            # Update discriminator
+            optimizer.step()
+
+            # print statistics
+            running_real_loss += real_loss.item()
+            running_fake_loss += fake_loss.item()
+            num_examples += labels.size(0)
+
+    return num_examples
+
+
 
 def train_mixed_data(
         model: nn.Module,
@@ -324,11 +409,12 @@ def train_mixed_data(
 
             # Mixed loss-------
 
-            is_synth=~is_real
+            is_fake=~is_real
             loss = criterion(outputs, labels)
             weights = torch.zeros_like(loss)
+            
             weights[is_real] = -(1 - synth_strength_ratio) * coeff_real
-            weights[~is_synth] = synth_strength_ratio * coeff_synth
+            weights[is_fake] = synth_strength_ratio * coeff_synth
             loss = (weights * loss).mean()
             loss.backward()
             optimizer.step()
