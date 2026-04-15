@@ -28,12 +28,14 @@ class HonestClient:
             trainset: Dataset,
             testset: Dataset,
             process: bool = True,
+            initial_parameters= None,
         ) -> None:
         """Initializes a new honest client."""
         self._client_id = client_id
         self._trainset = trainset
         self._testset = testset
         self._process = process
+        self._initial_parameters = initial_parameters
 
     @property
     def client_id(self):

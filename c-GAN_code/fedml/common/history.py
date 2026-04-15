@@ -17,6 +17,7 @@ class History:
         self.metrics_distributed: dict[str, list[tuple[int, Scalar]]] = {}
         self.metrics_centralized: dict[str, list[tuple[int, Scalar]]] = {}
         self.metrics_defense_filter: dict[str, list[tuple[int, Scalar]]] = {}
+        self.metrics_attack: dict[str, list[tuple[int, Scalar]]] = {}
 
     def add_metrics_filter(self, server_round: int, metrics: dict[str, Scalar], client_id:int) -> None:
         """Add metrics entries (from defense filter)."""
@@ -24,6 +25,13 @@ class History:
             if key not in self.metrics_defense_filter:
                 self.metrics_defense_filter[key] = []
             self.metrics_defense_filter[key].append((server_round, metrics[key], client_id))
+
+    def add_attack_metrics(self, server_round: int, metrics: dict[str, Scalar], client_id:int) -> None:
+        """Add metrics entries (from attack)."""
+        for key in metrics:
+            if key not in self.metrics_attack:
+                self.metrics_attack[key] = []
+            self.metrics_attack[key].append((server_round, metrics[key], client_id))
 
     def add_loss_distributed(self, server_round: int, loss: float) -> None:
         """Add one loss entry (from distributed evaluation)."""
@@ -121,13 +129,32 @@ class History:
             )
         return rep
 
+    def to_dict(self) -> dict:
+        """Convert history object into a serializable dictionary."""
+        return {
+            "losses_distributed": self.losses_distributed,
+            "losses_centralized": self.losses_centralized,
+            "metrics_distributed_fit": self.metrics_distributed_fit,
+            "metrics_distributed": self.metrics_distributed,
+            "metrics_centralized": self.metrics_centralized,
+            "metrics_defense_filter": self.metrics_defense_filter,
+            "metrics_attack": self.metrics_attack,
+        }
+
     def save_to_disc(self, path, filename, verbose=False):
-        pass
-        # results_numpy = {key : np.array(value) for key, value in self.to_dict().items()}
+        """Save the history to disc."""
+        import os
+        import numpy as np
+        results_numpy = {key: np.array(value) for key, value in self.to_dict().items()}
 
-        # if not os.path.exists(path):
-        #     os.makedirs(path)
+        if not os.path.exists(path):
+            os.makedirs(path)
 
-        # np.savez(path+filename, **results_numpy) 
-        # if verbose:
-        #     print("Saved results to ", path+filename+".npz")
+        output_file = os.path.join(path, filename)
+        np.savez(output_file, **results_numpy)
+        if verbose:
+            if output_file.endswith(".npz"):
+                print("Saved results to ", output_file)
+            else:
+                print("Saved results to ", output_file + ".npz")
+        

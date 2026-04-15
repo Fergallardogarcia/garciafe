@@ -10,6 +10,7 @@ from fedml.common.history import History
 from fedml.common.logger import log
 
 import os
+import torch
 
 from abc import ABC, abstractmethod
 
@@ -33,6 +34,25 @@ class Server:
         self.client_manager = client_manager
         self.strategy = strategy
         self.set_initial_parameters(initial_parameters=initial_parameters)
+        self._pre_attack_checkpoint_saved = False
+        self._pre_attack_round = None
+        try:
+            attack_round = int(
+                self.user_configs["EXPERIMENT_CONFIGS"]["MAL_HYPER_PARAM"]["ATTACK_ROUND"]
+            )
+            if attack_round > 1:
+                self._pre_attack_round = attack_round - 1
+            else:
+                log(
+                    WARNING,
+                    "ATTACK_ROUND=%s has no positive pre-attack round; checkpointing disabled",
+                    attack_round,
+                )
+        except Exception:
+            log(
+                WARNING,
+                "ATTACK_ROUND not found in config; pre-attack checkpointing disabled",
+            )
         # self.max_workers: Optional[int] = None
         self.max_workers: Optional[int] = self.strategy.min_fit_clients * 2 + 1 # +1 for the extra attack GAN just in case 
 
@@ -74,6 +94,51 @@ class Server:
         else:
             raise NotImplementedError("Parameter initialization not implemented")
 
+    def _save_pre_attack_checkpoints(self, server_round: int) -> None:
+        if self._pre_attack_checkpoint_saved:
+            return
+        if self._pre_attack_round is None or server_round != self._pre_attack_round:
+            return
+
+        output_path = self.user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"]
+        os.makedirs(output_path, exist_ok=True)
+
+        global_ckpt_path = os.path.join(
+            output_path,
+            f"weights-global-pre-attack-round-{server_round}.pt",
+        )
+        global_weights = self.parameters
+        if isinstance(global_weights, torch.Tensor):
+            global_weights = global_weights.detach().clone().cpu()
+        torch.save(obj=global_weights, f=global_ckpt_path)
+
+        filter_ckpt_path = os.path.join(
+            output_path,
+            f"weights-filter-gen-pre-attack-round-{server_round}.pt",
+        )
+        filter_gen_model = getattr(self.filter, "gen_model", None)
+        if filter_gen_model is not None:
+            filter_gen_weights = filter_gen_model.get_weights()
+            if isinstance(filter_gen_weights, torch.Tensor):
+                filter_gen_weights = filter_gen_weights.detach().clone().cpu()
+            torch.save(obj=filter_gen_weights, f=filter_ckpt_path)
+            log(
+                INFO,
+                "Saved pre-attack checkpoints at round %s: global=%s, filter_generator=%s",
+                server_round,
+                global_ckpt_path,
+                filter_ckpt_path,
+            )
+        else:
+            log(
+                WARNING,
+                "Saved global pre-attack checkpoint at round %s to %s, but no filter generator was available",
+                server_round,
+                global_ckpt_path,
+            )
+
+        self._pre_attack_checkpoint_saved = True
+
 
     
 
@@ -88,9 +153,16 @@ class Server:
             client_manager=self.client_manager,
         )
 
+        mal_client_ins= [client_ins for client_ins in client_instructions if client_ins[0].client_type != "HONEST"]
+        mal_cids = [client_ins[0].client_id for client_ins in mal_client_ins]
+
         if not client_instructions:
             log(WARNING, "configure_fit: no clients selected, cancel")
             return None
+
+        mal_client_ins = [client_ins for client_ins in client_instructions if client_ins[0].client_type != "HONEST"]
+        mal_cids = [client_ins[0].client_id for client_ins in mal_client_ins]
+
         log(
             INFO,
             "configure_fit: strategy sampled %s clients (out of %s)",
@@ -134,6 +206,7 @@ class Server:
             len(failures),
         )
 
+        mal_results = [res for res in results if res[0] in mal_cids]
 
         finished_fs, _ = concurrent.futures.wait(
             fs=filter_fs,
@@ -147,6 +220,16 @@ class Server:
         else: # Not using a filter
             metrics_filter = dict()
             selected_indexes = None
+        
+        if self.attack.server_fit_round_after() is not None:
+            eval_gen_attack_round, log_gen_attack_stats = self.attack.server_fit_round_after()
+            _, attack_client_stats = eval_gen_attack_round(server_round=server_round, results=results)
+            metrics_attack = log_gen_attack_stats(dict(), attack_client_stats, mal_results=mal_results)
+        else: # Not using an attack
+            metrics_attack = dict()
+            
+
+        # self.eval_gen_attack_round, self.log_gen_attack_stats
 
         # Aggregate training results
         aggregated_result: tuple[
@@ -158,6 +241,7 @@ class Server:
 
         # Merge filter metrics with aggregated metrics
         metrics_aggregated.update(metrics_filter)
+        metrics_aggregated.update(metrics_attack)
 
         return parameters_aggregated, metrics_aggregated, (results, failures)
 
@@ -235,14 +319,19 @@ class Server:
 
         for current_round in range(1, num_rounds+1):
             # Run a single fit round, collect results and update parameters
+            # res_fit : parameters_aggregated, metrics_aggregated, (results, failures)
             res_fit = self.fit_round(current_round)
 
             if res_fit is not None:
                 parameters_prime, fit_metrics, _ = res_fit
                 if parameters_prime is not None:
                     self.parameters = parameters_prime
+                if fit_metrics is None:
+                    fit_metrics = dict()
                 history.add_metrics_distributed_fit(server_round=current_round, metrics=fit_metrics)
                 if self.experiment_manager is not None: self.experiment_manager.log(fit_metrics, nested=True)
+
+            self._save_pre_attack_checkpoints(current_round)
 
             # Evaluate model using strategy implementation
             res_cen = self.strategy.evaluate(current_round, parameters=self.parameters)

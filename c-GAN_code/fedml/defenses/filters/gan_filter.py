@@ -79,7 +79,9 @@ class GenerativeFilter(Filter):
         submitted_fs ={
             executor.submit(self.train_gen, global_parameters, server_round)
         }
+        
         return submitted_fs
+        
 
     def server_fit_round_after(self):
         return self.filter_round, self.log_filter_stats
@@ -126,20 +128,6 @@ class GenerativeFilter(Filter):
         )
 
         gen_params_post = self.gen_model.get_weights()
-
-        process_id = os.getpid()
-        thread_name = threading.current_thread().name
-
-        log(
-            INFO,
-            "Server Gen DEF model updated: %s, device: %s, filter type: %s, process_id: %s, thread_name: %s",
-
-            (gen_params_post != gen_params_prior).any(),
-            self.device,
-            self.filter_type,
-            process_id,
-            thread_name
-            )
 
         
         # Finished training return

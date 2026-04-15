@@ -45,19 +45,23 @@ def aggregate_fit_metrics(
     # Run through all experiments and accumulate
     # desired results in pre-defined format
     for indx, (num_examples, client_dict) in enumerate(fit_metrics):
-        metrics_aggregated["sampled"].append(client_dict['client_id'])
-        metrics_aggregated["train_accu"][f"client_{client_dict['client_id']}"] = client_dict["train_accu"]
-        metrics_aggregated["train_loss"][f"client_{client_dict['client_id']}"] = client_dict["train_loss"]
-        metrics_aggregated["test_accu"][f"client_{client_dict['client_id']}"] = client_dict["test_accu"]
-        metrics_aggregated["test_loss"][f"client_{client_dict['client_id']}"] = client_dict["test_loss"]
-        metrics_aggregated["attacking"][f"client_{client_dict['client_id']}"] = client_dict["attacking"]
-        metrics_aggregated["client_type"][f"client_{client_dict['client_id']}"] = client_dict["client_type"]
-        metrics_aggregated["fit_duration"][f"client_{client_dict['client_id']}"] = client_dict["fit_duration"]
-        metrics_aggregated["num_examples"][f"client_{client_dict['client_id']}"] = num_examples
+        client_id = client_dict["client_id"]
+        client_key = f"client_{client_id}"
+        metrics_aggregated["sampled"].append(client_id)
+
+        for metric_key, metric_value in client_dict.items():
+            if metric_key == "client_id":
+                continue
+            if metric_key not in metrics_aggregated:
+                metrics_aggregated[metric_key] = dict()
+            if isinstance(metrics_aggregated[metric_key], dict):
+                metrics_aggregated[metric_key][client_key] = metric_value
+
+        metrics_aggregated["num_examples"][client_key] = num_examples
         if selected is not None:
-            metrics_aggregated["selected"][f"client_{client_dict['client_id']}"] = indx in selected
+            metrics_aggregated["selected"][client_key] = indx in selected
         if weight_pi is not None:
-            metrics_aggregated["weight_pi"][f"client_{client_dict['client_id']}"] = weight_pi[indx]
+            metrics_aggregated["weight_pi"][client_key] = weight_pi[indx]
 
     return metrics_aggregated
 

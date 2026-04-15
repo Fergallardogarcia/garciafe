@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore")
 
 import multiprocessing
 from logging import DEBUG
+from typing import cast
 
 import copy
 import torch
@@ -51,6 +52,9 @@ def single_node_simulation(exp_name, user_configs, executor_type, num_gpus=None)
     # Load appropriate number of local models
     # local_models = [load_model(model_configs=user_configs["MODEL_CONFIGS"]).to(run_devices[i]) for i in range(min_sample_size)]
     local_models = [load_model(model_configs=user_configs["MODEL_CONFIGS"]).to(run_devices[i]) for i in range(total_clients)]
+
+    def build_model():
+        model = load_model(model_configs=user_configs["MODEL_CONFIGS"])
 
     # Create client objects based on client types
     mal_client_type = user_configs["EXPERIMENT_CONFIGS"]["MAL_CLIENT_TYPE"]
@@ -124,8 +128,10 @@ def single_node_simulation(exp_name, user_configs, executor_type, num_gpus=None)
         DEBUG, 
         "Saving logged results to disk ..."
     )
-    exp_manager.save_to_disc(user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"], exp_name)
-    history.save_to_disc(user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"], exp_name)
+    exp_manager_file = f"{exp_name}_exp"
+    history_file = f"{exp_name}_history"
+    exp_manager.save_to_disc(user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"], exp_manager_file)
+    history.save_to_disc(user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"], history_file)
 
     # Save the final model state to disk
     log(
@@ -160,6 +166,11 @@ def main():
         default="ProcessPool",       # ThreadPool, ProcessPool
         help="Run clients on thread or process pool (default: ThreadPool)",
     )
+    parser.add_argument(
+        "--random-reinit",
+        action="store_true",
+        help="Randomly reinitialize model weights and ignore MODEL_CONFIGS.WEIGHT_PATH",
+    )
     args = parser.parse_args()
 
     user_configs = parse_configs(args.config_file)
@@ -182,6 +193,7 @@ def main():
     log(DEBUG, f"# of GPUs       : {args.num_gpus}")
     log(DEBUG, f"Config File     : {args.config_file}")
     log(DEBUG, f"Executor Type   : {args.executor_type}")
+    log(DEBUG, f"Random Reinit   : {args.random_reinit}")
 
     single_node_simulation(exp_name=exp_name, user_configs=user_configs, num_gpus=args.num_gpus, executor_type=args.executor_type)
 
