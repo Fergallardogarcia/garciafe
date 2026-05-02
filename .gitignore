@@ -189,4 +189,6 @@ Experiment-Configs/build_experiment_configs.py
 Plotting/plot_tools/plot_tools.py
 Plotting/plot_tools/plot_heatmap.py
 .history
+model_weights/
+
 
