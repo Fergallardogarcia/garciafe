@@ -10,7 +10,7 @@ def evaluate(
         testloader: torch.utils.data.DataLoader,
         device: str,
         criterion: Optional[nn.Module] = None,
-    ) -> Tuple[float, float]:
+    ) -> Tuple[float, float, int]:
     
     """Validate the model on the entire test set.
     
@@ -20,17 +20,18 @@ def evaluate(
     :param criterion: The loss function to use for model evaluation.
     :returns: Evaluation loss and accuracy of the model.
     """
-    if criterion is None: criterion = nn.CrossEntropyLoss()
+    loss_fn = criterion if criterion is not None else nn.CrossEntropyLoss()
     correct = 0
     total = 0
     loss = 0.0
 
     model.eval()
+    
     with torch.no_grad():
         for data, target in testloader:
             data, target = data.to(device), target.to(device)
             outputs = model(data)
-            loss += criterion(outputs, target).item() * target.size(0)
+            loss += loss_fn(outputs, target).item() * target.size(0)
             _, predicted = torch.max(outputs.data, 1)  
             total += target.size(0)
             correct += (predicted == target).sum().item()
@@ -55,7 +56,7 @@ def evaluate_gan(
     :param criterion: The loss function to use for model evaluation.
     :returns: Evaluation loss and accuracy of the model.
     """
-    if criterion is None: criterion = nn.CrossEntropyLoss()
+    loss_fn = criterion if criterion is not None else nn.CrossEntropyLoss()
 
     # Stage the discriminator model to the run device
     if next(dis_model.parameters()).device != device:
@@ -77,7 +78,7 @@ def evaluate_gan(
             _, preds = torch.max(dis_predict.data, dim=1)
 
             # Compute Loss
-            g_loss = criterion(dis_predict, labels)
+            g_loss = loss_fn(dis_predict, labels)
             total_loss += g_loss.item() * len(labels)
             
             # Compute accuracy per class

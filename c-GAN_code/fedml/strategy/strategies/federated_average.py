@@ -92,6 +92,7 @@ class FederatedAverage(Strategy):
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
         self.local_models = local_models
         self.run_devices = run_devices
+        self.global_dataloader = kwargs.get("global_dataloader", None)
         # if len(self.local_models) != len(self.run_devices) or len(self.local_models) != min_fit_clients:
         #     raise Exception("Number of fit clients must be equal to number of models provided!!!")
         if len(self.local_models) != len(self.run_devices):

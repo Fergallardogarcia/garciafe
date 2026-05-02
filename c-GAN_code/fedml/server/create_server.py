@@ -1,15 +1,16 @@
 """A function to create desired type of FL server."""
-from typing import Callable
+from typing import Any
 
 def create_server(
         server_type: str,
         client_manager,
-        strategy: Callable,
+    strategy: Any,
         user_configs: dict,
         executor_type: str,
         initial_parameters = None,
         experiment_manager = None,
         num_gpus = None,
+        global_trainset = None,
     ):
     """Function to create the appropriat FL server instance."""
     

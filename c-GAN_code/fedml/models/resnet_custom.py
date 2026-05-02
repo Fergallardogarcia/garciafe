@@ -90,7 +90,7 @@ class ResNet(BaseModel):
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
-    def features(self, x):
+    def features(self, x, output_layer=5):
         out1 = self.relu(self.bn1(self.conv1(x)))
         out2 = self.layer1(out1)
         out3 = self.layer2(out2)
@@ -98,7 +98,16 @@ class ResNet(BaseModel):
         out5 = self.layer4(out4)
         out5 = out5.view(out5.size()[0], -1)
 
-        return out5
+        if output_layer == 1:
+            return out1.view(out5.size()[0], -1)
+        elif output_layer == 2:
+            return out2.view(out5.size()[0], -1)
+        elif output_layer == 3:
+            return out3.view(out5.size()[0], -1)
+        elif output_layer == 4:
+            return out4.view(out5.size()[0], -1)
+        elif output_layer == 5:
+            return out5
 
     def forward(self, x):
         out = self.relu(self.bn1(self.conv1(x)))
@@ -128,8 +137,8 @@ class ResNet(BaseModel):
 def ResNet18(name=None, created_time=None, num_classes=10):
     return ResNet(BasicBlock, [2,2,2,2],name='{0}_ResNet_18'.format(name), created_time=created_time, num_classes=num_classes)
 
-def ResNet34(name=None, created_time=None):
-    return ResNet(BasicBlock, [3,4,6,3],name='{0}_ResNet_34'.format(name), created_time=created_time)
+def ResNet34(name=None, created_time=None, num_classes=10):
+    return ResNet(BasicBlock, [3,4,6,3],name='{0}_ResNet_34'.format(name), created_time=created_time, num_classes=num_classes)
 
 def ResNet50(name=None, created_time=None):
     return ResNet(Bottleneck, [3,4,6,3],name='{0}_ResNet_50'.format(name), created_time=created_time)

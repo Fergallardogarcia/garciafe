@@ -1,8 +1,8 @@
 """Type definitions"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Union, Dict, List
+from typing import Callable, Union, Dict, List, Optional, Any
 
 from torch import Tensor
 
@@ -39,11 +39,19 @@ class Status:
 
 
 @dataclass
+class GanAttackFitPayload:
+    """Additional fit payload for GAN attack clients."""
+    perturbation_direction: Optional[Parameters] = None
+    perturbation_magnitude: Optional[float] = None
+
+
+@dataclass
 class FitIns:
     """Fit instructions for a client."""
 
     parameters: Parameters
     config: dict[str, Scalar]
+    gan_attack_payload: Optional[GanAttackFitPayload] = None
 
 
 @dataclass
@@ -54,6 +62,7 @@ class FitRes:
     parameters: Parameters
     num_examples: int
     metrics: dict[str, Scalar]
+    param_array: dict[str, Parameters] = field(default_factory=dict)
 
 
 @dataclass
@@ -62,6 +71,8 @@ class EvaluateIns:
 
     parameters: Parameters
     config: dict[str, Scalar]
+    param_array: dict[str, Parameters] = field(default_factory=dict)
+    
 
 
 @dataclass

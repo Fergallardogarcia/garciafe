@@ -9,6 +9,10 @@ from .model import BaseModel
 
 class GeneratorTest(BaseModel):
     """Generative Adversarial Network model's generator part."""
+    
+    @property
+    def gen_type(self) -> str:
+        return "TEST-SIGMOID"
 
     def __init__(self, num_classes, input_size, output_channels, output_size):
         super(GeneratorTest, self).__init__(num_classes=num_classes)

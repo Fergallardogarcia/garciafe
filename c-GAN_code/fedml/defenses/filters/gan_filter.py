@@ -2,6 +2,8 @@ from typing import Dict, List, Tuple, Optional
 from logging import INFO, DEBUG
 from collections import defaultdict
 
+import concurrent.futures
+
 import torch
 import torch.nn as nn
 
@@ -35,19 +37,27 @@ class GenerativeFilter(Filter):
         self.dis_configs = dis_configs
         self.train_configs = train_configs
         self.filter_configs = filter_configs
-
-        # Setup models (both generator and discriminator)
-        self.gen_model = load_model(model_configs=gen_configs)
-        self.dis_model = load_model(model_configs=dis_configs)
-
-        self.criterion = get_criterion(criterion_str=train_configs["CRITERION"])
-
+        
 
         which_device = train_configs["DEVICE"]
         if which_device in ["auto", "cuda"] and torch.cuda.is_available():
             self.device = cuda_device
         else:
             self.device = "cpu"
+
+        # Setup models (both generator and discriminator)
+        self.gen_model = load_model(model_configs=gen_configs)
+        if self.gen_configs["SET_WEIGHTS"]:
+            # self.gen_model.load_state_dict(torch.load(gen_configs["WEIGHT_PATH"], weights_only=False))
+            init_gen_weights = torch.load(gen_configs["WEIGHT_PATH"])
+            self.gen_model.set_weights(init_gen_weights)
+        self.dis_model = load_model(model_configs=dis_configs)
+
+
+        self.criterion = get_criterion(criterion_str=train_configs["CRITERION"])
+
+
+        
         # torch.get_default_device()
         
         # Setup random data needed for dataset generation
@@ -79,10 +89,25 @@ class GenerativeFilter(Filter):
         submitted_fs ={
             executor.submit(self.train_gen, global_parameters, server_round)
         }
+       
         return submitted_fs
+        
+        
 
-    def server_fit_round_after(self):
-        return self.filter_round, self.log_filter_stats
+    def server_fit_round_after(self, gen_weights):
+        if gen_weights is None:
+            return None
+        
+        self.gen_model.set_weights(gen_weights)
+        gen_dataset= generate_dataset(
+            gen_model=self.gen_model,
+            input_znoises=self.input_znoises,
+            input_classes=self.input_classes,
+            device=self.device,
+            batch_size=1024,
+        )
+
+        return self.filter_round, self.log_filter_stats, gen_dataset
 
     
     
@@ -97,7 +122,7 @@ class GenerativeFilter(Filter):
                 "filter_updates: Skipping filteration at server round %s",
                 server_round,
             )
-            return self
+            return self.gen_model.get_weights()
 
         # Set new weights to the generator
         self.dis_model.set_weights(weights=global_weights)
@@ -127,32 +152,19 @@ class GenerativeFilter(Filter):
 
         gen_params_post = self.gen_model.get_weights()
 
-        process_id = os.getpid()
-        thread_name = threading.current_thread().name
-
-        log(
-            INFO,
-            "Server Gen DEF model updated: %s, device: %s, filter type: %s, process_id: %s, thread_name: %s",
-
-            (gen_params_post != gen_params_prior).any(),
-            self.device,
-            self.filter_type,
-            process_id,
-            thread_name
-            )
-
         
-        # Finished training return
-        return self
+        # Return trained generator weights
+        return self.gen_model.get_weights()
 
 
 
     def filter_round(self, server_round: int, results):
-        (selected_indexes, client_stats) = self.filter_updates(
+        (selected_indexes, client_stats, gen_dataset) = self.filter_updates(
             client_weights=[(fit_res.parameters, fit_res.num_examples) for _, fit_res in results],
+            client_info=[(fit_res.metrics["client_id"], fit_res.metrics["attacking"]) for _, fit_res in results],
             server_round=server_round,
         )
-        return selected_indexes, client_stats
+        return selected_indexes, client_stats, gen_dataset
 
 
 
@@ -185,6 +197,7 @@ class GenerativeFilter(Filter):
     def filter_updates(
             self, 
             client_weights: List[Tuple[Parameters, int]],
+            client_info: List[Tuple[str, bool]],
             server_round: int
         ) -> Tuple[List[int], Optional[Dict[str, List]]]:
         """Filter the updates"""
@@ -196,7 +209,7 @@ class GenerativeFilter(Filter):
                 "filter_updates: Skipping filteration at server round %s",
                 server_round,
             )
-            return [indx for indx in range(len(client_weights))], None
+            return [indx for indx in range(len(client_weights))], None, None
 
         # Generate a new validation dataset
         gen_dataset = generate_dataset(
@@ -208,59 +221,72 @@ class GenerativeFilter(Filter):
         )
 
         # Perform filteration 
-        select_ids, client_stats = perform_filteration(
+        select_cids, client_stats, attack_labels = perform_filteration(
             filter_configs=self.filter_configs,
             dis_model=self.dis_model,
             gen_dataset=gen_dataset,
             client_weights=client_weights,
+            client_info=client_info,
             criterion=self.criterion,
             num_classes=self.num_classes,
             samples_per_class=self.samples_per_class,
             device=self.device
         )
 
+        acc_reg_labels = ["+" if idx in select_cids else "~" for idx, _ in enumerate(client_stats["accu_all"])]
+        hon_mal_labels = ["A" if att else "h" for idx, att in enumerate(attack_labels)]
+        combined= [f"{a}{b}" for a, b in zip(acc_reg_labels, hon_mal_labels)]
+        acc_labeled = [f"{prefix}{acc:0.4f}" for prefix, acc in zip(acc_reg_labels, client_stats["accu_all"])]
+        loss_labeled = [f"{prefix}{loss:0.4f}" for prefix, loss in zip(hon_mal_labels, client_stats["avg_loss"])]
+        acc_pairs = list(zip(client_stats["accu_all"], combined))
+        loss_pairs = list(zip(client_stats["avg_loss"], combined))
+
         log(
             INFO,
             "filter_updates: (%s, total: %s, selected: %s)",
             server_round,
             len(client_weights),
-            len(select_ids),
+            len(select_cids),
         )
 
         log(
             DEBUG,
-            "filter_updates: accuracies %s",
-            client_stats["accu_all"]
+            "filter_updates: accuracies %s,",
+            acc_pairs,
+            
         )
 
         log(
             DEBUG,
             "filter_updates: average loss %s",
-            [f"{i:0.4f}" for i in client_stats["avg_loss"]]
+            loss_pairs,
+            
         )
 
+
         # Return selected client ids and stats
-        return select_ids, client_stats
+        return select_cids, client_stats, gen_dataset
 
 def perform_filteration(
         filter_configs, 
         dis_model, 
         gen_dataset, 
         client_weights, 
+        client_info,
         criterion,
         num_classes, 
         samples_per_class, 
         device
     ):
     # Create a dataloader of the generator data
-    dataloader = DataLoader(gen_dataset, batch_size=2048, shuffle=False)
+    dataloader = DataLoader(gen_dataset, batch_size=2048, shuffle=False) #From 2048 to 1024
     threshold = filter_configs["BASELINE_OVERALL_MIN_ACC"]
 
     # Perform evaluation of all clients
     select_ids = []
     client_stats = defaultdict(list)
     for index, (weights, _) in enumerate(client_weights):
-        # Setup the discriminator model        
+        # Setup the discriminator model       
         dis_model.set_weights(weights=weights)
         stats = evaluate_gan(
             dis_model=dis_model,
@@ -349,8 +375,11 @@ def perform_filteration(
 
     else:
         raise ValueError(f"Invalid filteration type {filter_configs['FILTERATION_TYPE']} specified.")
+    
+    
+    attack_labels = [cinf[1] for cinf in client_info]
 
-    return (select_ids, client_stats)
+    return (select_ids, client_stats, attack_labels)
 
 
 def generate_dataset(

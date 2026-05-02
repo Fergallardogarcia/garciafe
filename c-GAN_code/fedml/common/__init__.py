@@ -6,6 +6,7 @@ from .typing import Code as Code
 from .typing import EvaluateIns as EvaluateIns
 from .typing import EvaluateRes as EvaluateRes
 from .typing import FitIns as FitIns
+from .typing import GanAttackFitPayload as GanAttackFitPayload
 from .typing import FitRes as FitRes
 from .typing import Status as Status
 from .typing import Scalar as Scalar

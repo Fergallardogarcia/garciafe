@@ -6,3 +6,4 @@ from: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-devel
 	conda install -y -c conda-forge pyyaml scikit-learn
 	python -m pip install flwr
 	python -m pip install wandb
+	python -m pip install plotly

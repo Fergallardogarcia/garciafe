@@ -13,6 +13,10 @@ class GeneratorTest(BaseModel):
     Reference Link: https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
     
     """
+    @property
+    def gen_type(self) -> str:
+        return "GEN-DCGAN"
+
     def __init__(self, num_classes, input_size, output_channels, output_size, ngf=32):
         super(GeneratorTest, self).__init__(num_classes=num_classes)
         self.embedding_layers = nn.Embedding(num_classes, num_classes)

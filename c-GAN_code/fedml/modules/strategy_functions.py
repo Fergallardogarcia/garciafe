@@ -79,7 +79,7 @@ def get_evaluate_fn(
 ) -> Callable[[int, Parameters, Dict[str, Scalar]], Optional[Tuple[float, float]]]:
     """Return an evaluation function for centralized evaluation."""
     model = load_model(model_configs=model_configs)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=1024, shuffle=False)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=2048, shuffle=False) #from 1024 to 2048
 
     def evaluate_fn(
             server_round: int, 

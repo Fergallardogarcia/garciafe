@@ -17,7 +17,7 @@ class FilterMap(TypedDict, total=False):
 def create_filter(
         user_configs: Dict, 
         device: Optional[str] = "cuda",
-        mode: str = "DEFENSE"
+        mode: str = "DEFENSE",
     ) -> Filter:
     """Create requested filter."""
     
@@ -60,6 +60,7 @@ def create_filter(
                 filter_configs=filter_param["FILTER_ARGS"], #Sloppy because we are using unnecesary info to initialize. Fix later
                 skip_rounds=user_configs["EXPERIMENT_CONFIGS"]["MAL_HYPER_PARAM"]["ATTACK_ROUND"],
                 cuda_device=device,
+                random_seed=user_configs["SERVER_CONFIGS"]["RANDOM_SEED"],
             )
         
     else:

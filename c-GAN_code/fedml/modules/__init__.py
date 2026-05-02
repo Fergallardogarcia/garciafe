@@ -7,6 +7,7 @@ from .evaluator import evaluate_gan as evaluate_gan
 
 from .trainer import train as train
 from .trainer import train_generator as train_generator
+from .trainer import train_generator2 as train_generator2
 # from .trainer import backdoor_train as backdoor_train
 
 from .get_criterion import get_criterion as get_criterion

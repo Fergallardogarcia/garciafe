@@ -1,0 +1,166 @@
+CLIENT_CONFIGS:
+  BATCH_SIZE: 128
+  CRITERION: CROSSENTROPY
+  EVALUATE: true
+  INITIAL_LR: 0.01
+  LEARN_RATE: 0.1
+  LOCAL_EPCH: 10
+  LR_SCHEDULER: STATIC
+  OPTIMIZER: SGD
+  OPTIM_ARG:
+    momentum: 0.9
+    nesterov: true
+    weight_decay: 0.0001
+  RUN_DEVICE: auto
+  SCHEDULER_ARGS:
+    gamma: 0.5
+    milestones:
+    - 0.25
+    - 0.5
+    - 0.75
+  WARMUP_RDS: 10
+DATASET_CONFIGS:
+  CLASSES_PER_WORKER: 0
+  DATASET_DOWN: false
+  DATASET_NAME: CIFAR-10
+  DATASET_PATH: /mimer/NOBACKUP/Datasets/CIFAR
+  DIRICHLET_ALPHA: 100.0
+  MIN_PARTITION_SIZE: 0
+  RANDOM_SEED: 333
+  SPLIT: true
+  SPLIT_METHOD: DIRICHLET-BY-CLASS
+EXPERIMENT_CONFIGS:
+  MAL_CLIENT_FRAC: 0.2
+  MAL_CLIENT_TYPE: GAN_ATTACK
+  MAL_HYPER_PARAM:
+    ATTACK_RATIO: 1.0
+    ATTACK_ROUND: 25
+    BACKDOOR_CONFIG:
+      BACK_VERSION: v1
+      LEARN_RATE: 0.01
+      LOCAL_EPOCHS: 10
+      SCALE_FACTOR: 1.0
+      TRIGGER_SPECS:
+        GAP_X: 1
+        GAP_Y: 1
+        HEIGHT: 1
+        SHIFT_X: 2
+        SHIFT_Y: 2
+        WIDTH: 7
+      TRIGGER_TYPE: DEQUAL
+      V1_SPECS:
+        TARGETS:
+        - SOURCE_LABEL: 0
+          TARGET_LABEL: 2
+    GAN_ATTACK_CONFIG:
+      HYPER_PARAM:
+        GEN_ARGS:
+          LATENT_SIZE: 100
+          MODEL_NAME: GEN-DCGAN
+          NUM_CLASSES: 10
+          OUTPUT_SIZE: 32
+          OUT_CHANNEL: 3
+          SET_WEIGHTS: false
+          TRAIN: true
+          WEIGHT_PATH: ./temp/weights/gen_weights
+        SYNTHETIC_DATA_SIZE: trainset_size
+        DISCRIMINATOR_TRAINING_MODE: sequential # [pcgrad or sequential]
+        SYNTHETIC_STRENGTH_RATIO: 0
+        TRAIN_GAN_PARAMS:
+          BATCH_SIZE: 128
+          CRITERION: CROSSENTROPY
+          DEVICE: auto
+          ITERATION: 10000
+          LEARN_RATE: 1.0e-05
+          OPTIMIZER: ADAM
+    LABELFLIP_CONFIG:
+      FLIP_VERSION: v1
+      LEARN_RATE: 0.01
+      LOCAL_EPOCHS: 10
+      SCALE_FACTOR: 4.0
+      TARGETS:
+      - SOURCE_LABEL: 0
+        TARGET_LABEL: 1
+      - SOURCE_LABEL: 1
+        TARGET_LABEL: 2
+      - SOURCE_LABEL: 2
+        TARGET_LABEL: 3
+      - SOURCE_LABEL: 3
+        TARGET_LABEL: 4
+      - SOURCE_LABEL: 4
+        TARGET_LABEL: 5
+      - SOURCE_LABEL: 5
+        TARGET_LABEL: 6
+      - SOURCE_LABEL: 6
+        TARGET_LABEL: 7
+      - SOURCE_LABEL: 7
+        TARGET_LABEL: 8
+      - SOURCE_LABEL: 8
+        TARGET_LABEL: 9
+      - SOURCE_LABEL: 9
+        TARGET_LABEL: 0
+    RANDOM_CONFIG:
+      LOCATION: 0
+      NORM_SCALE: 5.0
+      SCALE: 1.0
+      TYPE: UNIFORM-2
+    SIGNFLIP_CONFIG:
+      SCALE_FACTOR: 2.0
+  MAL_SHARED_DATA: false
+MODEL_CONFIGS:
+  MODEL_NAME: RESNET-18-CUSTOM
+  NUM_CLASSES: 10
+  WEIGHT_PATH: null
+OUTPUT_CONFIGS:
+  RESULT_LOG_PATH: ../temp/CIFAR10/run_results/
+SERVER_CONFIGS:
+  AGGREGATE_STRAT: FED-AVERAGE
+  AGGR_STRAT_ARGS: null
+  CLIENTS_MANAGER: SIMPLE
+  EVALUATE_SAMPLE_FRACTION: 0.01
+  EVALUATE_SERVER: true
+  FILTER_CONFIGS:
+    FILTER_TYPE: GAN-FILTERING
+    HYPER_PARAM:
+      FILTER_ARGS:
+        BASELINE_BYCLASS_MIN_ACC:
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        - 0.85
+        BASELINE_OVERALL_MIN_ACC: 0.8
+        CLUSTER_BYCLASS_THRESHOLD: 0.5
+        FILTERATION_TYPE: MIXED-ACCURACY
+        NORM_LIMIT: 40.0
+        SAMPLES_PER_CLASS: 1000
+      GEN_ARGS:
+        LATENT_SIZE: 100
+        MODEL_NAME: TEST-TANH
+        NUM_CLASSES: 10
+        OUTPUT_SIZE: 32
+        OUT_CHANNEL: 3
+        SET_WEIGHTS: false
+        TRAIN: true
+        WEIGHT_PATH: ./temp/weights/gen_weights
+      SKIP_ROUNDS: 20
+      TRAIN_GAN_PARAMS:
+        BATCH_SIZE: 128
+        CRITERION: CROSSENTROPY
+        DEVICE: auto
+        ITERATION: 10000
+        LEARN_RATE: 1.0e-05
+        OPTIMIZER: ADAM
+  MIN_EVALUATE_SAMPLE_SIZE: 1
+  MIN_NUM_CLIENTS: 100
+  MIN_TRAINING_SAMPLE_SIZE: 10
+  NUM_TRAIN_ROUND: 55
+  RANDOM_SEED: 333
+  RUN_DEVICE: auto
+  SERVER_TYPE: FILTER
+  TRAINING_SAMPLE_FRACTION: 0.1

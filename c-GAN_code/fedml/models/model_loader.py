@@ -29,6 +29,9 @@ def load_model(model_configs: dict):
     elif model_configs["MODEL_NAME"] == "RESNET-18-CUSTOM":
         from .resnet_custom import ResNet18
         return ResNet18(num_classes = model_configs["NUM_CLASSES"])
+    elif model_configs["MODEL_NAME"] == "RESNET-34-CUSTOM":
+        from .resnet_custom import ResNet34
+        return ResNet34(num_classes = model_configs["NUM_CLASSES"])
 
     # The following two are very special models
     # used as generators for GAN based filteration.
@@ -58,3 +61,8 @@ def load_model(model_configs: dict):
         )
     else:
         raise ValueError(f"Invalid model {model_configs['MODEL_NAME']} requested.")
+
+
+
+"""A function to load desired model for training."""
+

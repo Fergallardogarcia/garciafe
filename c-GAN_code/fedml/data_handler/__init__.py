@@ -7,3 +7,8 @@ from .data_merge import merge_splits as merge_splits
 
 from .data_loader import load_data as load_data
 from .data_loader import load_and_fetch_split as load_and_fetch_split
+
+try:
+	from .tsne_three_datasets import plot_tsne_three_datasets as plot_tsne_three_datasets
+except ModuleNotFoundError:
+	pass
