@@ -4,5 +4,6 @@ from: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-devel
 %post
 	conda install -y python-dateutil
 	conda install -y -c conda-forge pyyaml scikit-learn
+	conda install -y matplotlib plotly
 	python -m pip install flwr
 	python -m pip install wandb

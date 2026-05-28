@@ -13,13 +13,13 @@ class Net(BaseModel):
         super(Net, self).__init__(num_classes=num_classes)
         self.conv_layer1 = nn.Sequential(
             nn.Conv2d(1, 6, kernel_size=5, stride=1, padding=0),
-            nn.BatchNorm2d(6),
+            nn.BatchNorm2d(6, track_running_stats=False),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size = 2, stride = 2)
         )
         self.conv_layer2 = nn.Sequential(
             nn.Conv2d(6, 16, kernel_size=5, stride=1, padding=0),
-            nn.BatchNorm2d(16),
+            nn.BatchNorm2d(16, track_running_stats=False),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size = 2, stride = 2)
         )

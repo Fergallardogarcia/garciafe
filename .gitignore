@@ -177,6 +177,7 @@ cython_debug/
 Alvis/.bash_history
 Alvis/.copilot/
 Alvis/.vscode-server/
+Alvis/.claude/
 containers/*.sif
 temp/
 temp_c-GAN/

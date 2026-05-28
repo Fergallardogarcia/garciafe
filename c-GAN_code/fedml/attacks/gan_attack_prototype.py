@@ -107,16 +107,17 @@ class GAN_attack(Filter):
 
 
             # Build one fixed perturbation direction once, using the same tensor type as get_weights.
-            rng = torch.Generator(device="cpu")
-            rng.manual_seed(int(random_seed))
+            self.rng = torch.Generator(device="cpu")
+            self.rng.manual_seed(int(random_seed))
             base_weights = self.dis_model.get_weights()
             direction = malicious_random_attack.rand_like(
                 base_weights,
                 dtype=base_weights.dtype,
-                generator=rng,
+                generator=self.rng,
             )
-            direction_norm = torch.linalg.vector_norm(direction).clamp_min(1e-12)
-            self.perturbation_direction = direction / direction_norm
+            direction = torch.sign(direction)
+            perturbation_sign = torch.where(direction == 0, torch.ones_like(direction), direction)
+            self.sign = perturbation_sign 
 
         
             
@@ -279,7 +280,7 @@ class GAN_attack(Filter):
         # Start the training process 
         # Train generator model with current
         # global model set as discriminator
-        self.gen_model = train_generator(
+        self.gen_model = train_generator2(
             gen_model=self.gen_model, 
             dis_model=self.dis_model,
             gen_optim=gen_optimizer,
@@ -288,7 +289,8 @@ class GAN_attack(Filter):
             latent_size=self.latent_size,
             num_classes=self.num_classes,
             batch_size=self.train_configs["BATCH_SIZE"],
-            device=self.device
+            device=self.device,
+            minibatch_discrimination_weight=self.train_configs["MINIBATCH_DISCRIMINATION"],
         )
 
         # Return trained generator weights
@@ -325,9 +327,21 @@ class GAN_attack(Filter):
             client_post_gen_params = client.gen_model.get_weights()
         # Configure the attack for the next round of training here
             # Populate attack payload with perturbation direction
-            fitins.gan_attack_payload = GanAttackFitPayload(
-                perturbation_direction=self.perturbation_direction
+
+            direction = malicious_random_attack.rand_like(
+                self.dis_model.get_weights(),
+                dtype=self.dis_model.get_weights().dtype,
+                generator=self.rng,
             )
+            direction= direction.abs()
+            direction_norm = torch.linalg.vector_norm(direction).clamp_min(1e-12)
+            direction = direction / direction_norm
+            signed_direction = direction * self.sign.to(direction.device, dtype=direction.dtype)
+            fitins.gan_attack_payload = GanAttackFitPayload(
+                perturbation_direction=signed_direction,
+                perturbation_sign=self.sign,
+            )
+            
 
             
         if client_post_gen_params is not None:
@@ -351,7 +365,9 @@ def perform_evaluation_attack_gen(
         device
     ):
     # Create a dataloader of the generator data
-    dataloader = DataLoader(gen_dataset, batch_size=2048, shuffle=False)
+    loader_device = "cuda" if torch.cuda.is_available() else "cpu"
+    loader_generator = torch.Generator(device=loader_device)
+    dataloader = DataLoader(gen_dataset, batch_size=2048, shuffle=True, generator=loader_generator) 
     threshold = filter_configs["BASELINE_OVERALL_MIN_ACC"]
 
     # Perform evaluation of all clients

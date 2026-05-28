@@ -10,9 +10,47 @@ NUM_GPUS=${SLURM_GPUS_ON_NODE:-0}
 base_folder="/cephyr/users/garciafe"
 code_path="${base_folder}/c-GAN_code"
 CONFIG_FILE="${1:-./configs/base_2.yaml}"
+RUN_RESULTS_PATH="${2:-}"
+shift || true
+shift || true
+
+RESOLVED_RUN_RESULTS_PATH=""
+if [[ -n "${RUN_RESULTS_PATH}" ]]; then
+	if [[ "${RUN_RESULTS_PATH}" = /* ]]; then
+		RESOLVED_RUN_RESULTS_PATH="${RUN_RESULTS_PATH}"
+	else
+		candidate_paths=(
+			"${RUN_RESULTS_PATH}"
+			"${base_folder}/${RUN_RESULTS_PATH}"
+			"${code_path}/${RUN_RESULTS_PATH}"
+		)
+		for candidate in "${candidate_paths[@]}"; do
+			if [[ -d "${candidate}" ]]; then
+				RESOLVED_RUN_RESULTS_PATH="$(readlink -f "${candidate}" 2>/dev/null || echo "${candidate}")"
+				break
+			fi
+		done
+
+		if [[ -z "${RESOLVED_RUN_RESULTS_PATH}" ]]; then
+			RESOLVED_RUN_RESULTS_PATH="${base_folder}/${RUN_RESULTS_PATH}"
+		fi
+	fi
+fi
 
 # Command to run inside container
-TSNE_COMMAND="python ${code_path}/fedml/tSNE.py --num-gpus ${NUM_GPUS} --config-file ${base_folder}/${CONFIG_FILE} --executor-type ProcessPool"
+TSNE_COMMAND=(
+	python
+	"${code_path}/fedml/tSNE.py"
+	--num-gpus "${NUM_GPUS}"
+	--config-file "${base_folder}/${CONFIG_FILE}"
+	--executor-type ProcessPool
+)
+
+if [[ -n "${RESOLVED_RUN_RESULTS_PATH}" ]]; then
+	TSNE_COMMAND+=(--run-results-path "${RESOLVED_RUN_RESULTS_PATH}")
+fi
+
+TSNE_COMMAND+=("$@")
 
 echo "GPUs allocated: $NUM_GPUS"
 echo "Process: ${current_proc_num} of ${num_parallel_procs}"
@@ -22,4 +60,4 @@ echo "SLURM_GPUS_PER_NODE=$SLURM_GPUS_PER_NODE"
 echo "SLURM_JOB_GPUS=$SLURM_JOB_GPUS"
 
 # Run with PYTHONPATH correctly set
-apptainer exec --nv --pwd ${code_path} --env PYTHONPATH=${code_path} $environment_path $TSNE_COMMAND
+apptainer exec --nv --pwd "${code_path}" --env "PYTHONPATH=${code_path}" "${environment_path}" "${TSNE_COMMAND[@]}"

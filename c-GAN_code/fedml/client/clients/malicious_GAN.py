@@ -8,14 +8,15 @@ from fedml import modules
 from fedml.common.typing import Code
 from fedml.defenses.filters.gan_filter import generate_dataset
 from fedml.modules import evaluate, evaluate_gan
-
+from fedml.modules import get_optimizer
 
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from torch.distributions import Normal
 from torch.utils.data import TensorDataset, DataLoader
+from fedml.models.resnet_custom import ResNet18
 
 import numpy as np
 
@@ -118,6 +119,15 @@ class GanMaliciousClient(HonestClient):
         num_classes= gen_configs["NUM_CLASSES"]
         latent_size = gen_configs["LATENT_SIZE"]
 
+
+        # Extract KD config (allow either direct keys or nested KD_CONFIG)
+        kd_cfg = self.gan_config.get("KD_CONFIG", {}) if isinstance(self.gan_config, dict) else {}
+        kd_alpha_val = float(kd_cfg.get("ALPHA", self.gan_config.get("KD_ALPHA", 1.0)))
+        kd_temperature_val = float(kd_cfg.get("TEMPERATURE", self.gan_config.get("KD_TEMPERATURE", 7.0)))
+
+        #----------------------------------------
+        
+
         attack = np.random.random() < self.attack_config["ATTACK_RATIO"]
 
         if server_round < self.attack_config["ATTACK_ROUND"] or not attack:
@@ -158,7 +168,7 @@ class GanMaliciousClient(HonestClient):
         # Displace parameters before synthetic training.
         if training_mode == "sequential":
 
-            # from fedml.models.resnet_custom import ResNet18
+            
             # model = ResNet18(num_classes=num_classes).to(device)
             
             from .malicious_signflip import SignFlipClient
@@ -208,7 +218,7 @@ class GanMaliciousClient(HonestClient):
         #     if training_mode == "sequential"
         #     else train_malGAN_discriminator
         # )
-        train_malgan_fn = train_alternate
+        train_malgan_fn = perturbation_plus_correction
 
         
 
@@ -231,8 +241,8 @@ class GanMaliciousClient(HonestClient):
                     "PCGRAD_GRAD_OTHER_SCALE",self.synth_strength_ratio,
                 )
             ),
-            kd_alpha=float(self.gan_config.get("KD_ALPHA", 1.0)),
-            kd_temperature=float(self.gan_config.get("KD_TEMPERATURE", 7.0)),
+            kd_alpha=kd_alpha_val,
+            kd_temperature=kd_temperature_val,
             fitres=fitres,
             fitins=ins,
             attack_config=self.attack_config,
@@ -290,7 +300,7 @@ class GanMaliciousClient(HonestClient):
                     f"{test_loss_ratio:.6f} (model={ts_loss:.6f}, global={gl_ts_loss:.6f})"
                 ),
             )
-            fitres.metrics["test_loss_ratio_model_global"] = float(test_loss_ratio)
+            
 
         # Peforming cleanups
         # del weights, weights_updated, optimizer, trainloader
@@ -318,14 +328,638 @@ class GanMaliciousClient(HonestClient):
         fitres.metrics["test_loss"] = ts_loss
         fitres.metrics["attacking"] = True
         fitres.metrics["client_type"] = self.client_type
-        fitres.metrics["avg_grad_cosine_similarity"] = avg_grad_cosine_similarity
-        fitres.metrics["honest_update_norm"] = float(honest_update_norm)
-        fitres.metrics["malicious_update_norm"] = float(malicious_update_norm)
-        fitres.metrics["cosine_honest_malicious_update"] = float(cosine_honest_malicious)
-        fitres.metrics["malicious_update_proj_honest_norm"] = float(projection_on_honest_norm)
-        fitres.metrics["malicious_update_perp_honest_norm"] = float(perpendicular_to_honest_norm)
+
+
+        if bool(self.gan_config.get("TEST", False)):
+            fitres.parameters = honest_parameters
 
         return fitres
+
+
+
+
+def perturbation_plus_correction(
+        model: nn.Module,
+        gen_model: nn.Module,
+        global_model: Optional[nn.Module],
+        trainloader: torch.utils.data.DataLoader,
+        epochs: int,
+        device: str,  # pylint: disable=no-member
+        learning_rate: float,
+        criterion,
+        optimizer,
+        num_classes: int,
+        latent_size: int,
+        synth_strength_ratio: float,
+        fitres: FitRes,
+        fitins: FitIns,
+        priority_loss: str = "fake",
+        grad_other_scale: float = 1.0,
+        kd_alpha: float = 0.7,
+        kd_temperature: float = 8.0,
+        attack_config: Optional[Dict] = None,
+    ) -> Tuple[int, float]:
+    """Helper function to train the model on synthetic data only."""
+    if global_model is not None:
+        global_model.eval()
+    if fitins is None:
+        raise ValueError("perturbation_plus_correction requires FitIns")
+
+    attack_payload = fitins.gan_attack_payload
+    perturbation_direction = attack_payload.perturbation_direction if attack_payload is not None else None
+    if perturbation_direction is None:
+        raise ValueError("perturbation_plus_correction requires gan_attack_payload.perturbation_direction")
+
+    num_examples = 0
+    model.to(device)
+    model.eval()
+
+    fitres_metrics = None
+    if fitres is not None:
+        fitres_metrics = cast(Dict[str, object], fitres.metrics)
+    client_id_for_log = "-"
+    if fitres_metrics is not None and "client_id" in fitres_metrics:
+        client_id_for_log = str(fitres_metrics["client_id"])
+
+    fitres.param_array["pre"] = model.get_weights()
+    
+    perturbation_magnitude = None
+    if attack_payload is not None and attack_payload.perturbation_magnitude * attack_config["RANDOM_CONFIG"]["NORM_SCALE"] is not None:
+        perturbation_magnitude = attack_payload.perturbation_magnitude * attack_config["RANDOM_CONFIG"]["NORM_SCALE"]
+
+    with torch.no_grad():
+        model_weights = model.get_weights()
+        direction_tensor = perturbation_direction.to(
+            model_weights.device,
+            dtype=model_weights.dtype,
+        )
+        if direction_tensor.shape != model_weights.shape:
+            raise ValueError("perturbation_direction shape does not match model.get_weights()")
+        model.set_weights(model_weights + perturbation_magnitude * direction_tensor)
+
+    correction_direction = direction_tensor.detach()
+    
+    honest_update_direction = None
+    honest_update_sign = None
+    if attack_payload is not None:
+        honest_update_direction = getattr(attack_payload, "honest_update_direction", None)
+        honest_update_sign = getattr(attack_payload, "honest_update_sign", None)
+    
+    # Random init-----------------------------------------------
+    # reset_weights = ResNet18(num_classes=num_classes).get_weights()
+    # model.set_weights(reset_weights, clone=(not True))
+
+    #----------------------------------------------------------
+    fitres.param_array["perturbation"] = model.get_weights()
+    correction_config = attack_config["GAN_ATTACK_CONFIG"]["HYPER_PARAM"]["CORRECTION_CONFIG"]
+    if correction_config.get("CORRECTION", True):
+        # Step 2: train the perturbed model on synthetic 
+        model.train()
+        gen_model.eval()
+
+        adam_optimizer = get_optimizer(
+            optimizer_str="ADAMW",
+            local_model=model,
+            learning_rate=1e-3,
+            weight_decay=0.0,
+        )
+        for epoch in range(epochs):
+            for data in trainloader:
+                
+                pre_weights = model.get_weights()
+
+                labels = data[1].to(device)
+                input_znoises = torch.randn(labels.size(0), latent_size).to(device)
+                with torch.no_grad():
+                    images = gen_model(input_znoises, labels).detach()
+
+                # optimizer.zero_grad()
+                adam_optimizer.zero_grad()
+                student_outputs = model(images)
+                teacher_outputs = None
+                if global_model is not None:
+                    with torch.no_grad():
+                        teacher_outputs = global_model(images)
+                total_loss = compute_kd_loss(
+                    student_outputs=student_outputs,
+                    labels=labels,
+                    criterion=criterion,
+                    teacher_outputs=teacher_outputs,
+                    kd_alpha=kd_alpha,
+                    kd_temperature=kd_temperature,
+                )
+
+                total_loss.backward()
+                # Constrained optimization:---------------------------------
+                # _project_gradients_perpendicular_to_direction() 
+                #--------------------------------------------------------------
+                # optimizer.step()
+                adam_optimizer.step()
+                num_examples += labels.size(0)
+
+                # # Constrained optimization -------------------------------
+                update = model.get_weights() - pre_weights
+                def _mask(pre_weights, sign_vector) -> None:
+                    post_weights = model.get_weights()
+                    update = post_weights - pre_weights
+                    if sign_vector is None:
+                        raise ValueError(
+                            "perturbation_plus_correction requires gan_attack_payload.perturbation_sign"
+                        )
+                    sign_vector = sign_vector.to(update.device, dtype=update.dtype)
+                    if sign_vector.shape != update.shape:
+                        raise ValueError("perturbation_sign shape does not match model.get_weights()")
+                    masked_update = torch.where(
+                        update * sign_vector < 0,
+                        torch.zeros_like(update),
+                        update,
+                    )
+                    model.set_weights(pre_weights + masked_update)
+                def _project_perpendicular(pre_weights, direction) -> None:
+                    update = model.get_weights() - pre_weights
+                    direction = direction.to(update.device, dtype=update.dtype)
+                    if direction.shape != update.shape:
+                        raise ValueError("projection direction shape does not match model.get_weights()")
+                    projected_update = update - torch.dot(update, direction) / direction.dot(direction).clamp_min(1e-12) * direction
+                    model.set_weights(pre_weights + projected_update)
+                    # -------------------------------
+                constrained_mode = correction_config.get("CONSTRAINED_MODE", "perpendicular")
+                if constrained_mode == "mask":
+                    _mask(pre_weights, attack_payload.perturbation_sign)
+                    if honest_update_sign is not None:
+                        _mask(pre_weights, honest_update_sign)
+                elif constrained_mode == "perpendicular":
+                    _project_perpendicular(pre_weights, correction_direction)
+                    if honest_update_direction is not None:
+                        _project_perpendicular(pre_weights, honest_update_direction)
+
+        model.eval()
+
+        fitres.param_array["correction"] = model.get_weights()
+    else:
+        num_examples = len(trainloader.dataset) * max(int(epochs), 0)
+
+
+    # Log L2 distances to the initial (pre-perturb) weights.
+    if fitres is not None:
+        pre_weights = fitres.param_array.get("pre")
+        post_perturb = fitres.param_array.get("perturbation")
+        post_corr = fitres.param_array.get("correction")
+        if pre_weights is not None and post_perturb is not None:
+            dist_perturb = torch.linalg.vector_norm(post_perturb - pre_weights).item()
+            fitres.metrics["dist_perturb"] = float(dist_perturb)
+        if pre_weights is not None and post_corr is not None:
+            dist_corr = torch.linalg.vector_norm(post_corr - pre_weights).item()
+            fitres.metrics["dist_corr"] = float(dist_corr)
+
+    return num_examples, 0.0
+
+def train_malGAN_discriminator_sequential(
+        model: nn.Module,
+        gen_model: nn.Module,
+        global_model: Optional[nn.Module],
+        trainloader: torch.utils.data.DataLoader,
+        epochs: int,
+        device: str,  # pylint: disable=no-member
+        learning_rate: float,
+        criterion,
+        optimizer,
+        num_classes: int,
+        latent_size: int,
+        synth_strength_ratio: float,
+        fitres: Optional[FitRes] = None,
+        fitins: Optional[FitIns] = None,
+        priority_loss: str = "fake",
+        grad_other_scale: float = 1.0,
+        kd_alpha: float = 1.0,
+        kd_temperature: float = 5.0,
+        attack_config: Optional[Dict] = None,
+    ) -> Tuple[int, float]:
+    """Alternative discriminator training with two sequential updates.
+
+    For each batch: first optimize using real_loss, then optimize using fake_loss.
+    The return type matches train_malGAN_discriminator for easy swapping.
+    """
+
+
+    if global_model is not None:
+        global_model.eval()
+
+    
+
+    num_examples = 0
+    cosine_similarity_sum = 0.0
+    cosine_similarity_count = 0
+    params = [param for param in model.parameters() if param.requires_grad]
+
+    model.train()
+    for epoch in range(6*epochs):
+        running_real_loss = 0.0
+        running_fake_loss = 0.0
+        for i, data in enumerate(trainloader):
+            images, labels = data[0].to(device), data[1].to(device)
+
+            # # Step 1: optimize with real loss.
+            # optimizer.zero_grad()
+            # real_outputs = model(images)
+            # real_loss = - criterion(real_outputs, labels)
+            # real_loss.backward()
+            # real_grads = [
+            #     param.grad.detach().clone() if param.grad is not None else torch.zeros_like(param)
+            #     for param in params
+            # ]
+            # optimizer.step()
+
+            # Step 2: optimize with fake loss.
+           
+            optimizer.zero_grad()
+            input_znoises = torch.randn(labels.size(0), latent_size).to(device)
+            fake_data = gen_model(input_znoises, labels).detach()
+            fake_outputs = model(fake_data)
+            fake_loss = criterion(fake_outputs, labels)
+
+            teacher_outputs = None
+            if global_model is not None:
+                with torch.no_grad():
+                    teacher_outputs = global_model(fake_data)
+            total_loss = compute_kd_loss(
+                student_outputs=fake_outputs,
+                labels=labels,
+                criterion=criterion,
+                teacher_outputs=teacher_outputs,
+                kd_alpha=kd_alpha,
+                kd_temperature=kd_temperature,
+                base_loss=fake_loss,
+            )
+
+            total_loss.backward()
+            fake_grads = [
+                param.grad.detach().clone() if param.grad is not None else torch.zeros_like(param)
+                for param in params
+            ]
+            optimizer.step()
+
+            # grad_cosine_similarity = _cosine_similarity_between_grads(
+            #     grads_a=real_grads,
+            #     grads_b=fake_grads,
+            # )
+
+            # running_real_loss += real_loss.item()
+            running_fake_loss += fake_loss.item()
+            num_examples += labels.size(0)
+            # cosine_similarity_sum += grad_cosine_similarity
+            cosine_similarity_count += 1
+
+    avg_grad_cosine_similarity = cosine_similarity_sum / max(cosine_similarity_count, 1)
+    return num_examples, avg_grad_cosine_similarity
+
+
+def train_malGAN_discriminator(
+        model: nn.Module,
+        gen_model: nn.Module,
+        global_model: Optional[nn.Module],
+        trainloader: torch.utils.data.DataLoader,
+        epochs: int,
+        device: str,  # pylint: disable=no-member
+        learning_rate: float,
+        criterion,
+        optimizer,
+        num_classes: int,
+        latent_size: int,
+        synth_strength_ratio: float,
+        fitres: FitRes,
+        fitins: FitIns,
+        priority_loss: str = "fake",
+        grad_other_scale: float = 1.0,
+        kd_alpha: float = 1.0,
+        kd_temperature: float = 5.0,
+        attack_config: Optional[Dict] = None,
+    ) -> Tuple[int, float]:
+
+    fitres.param_array["pre_perturb"] = model.get_weights()
+
+    def _flatten_grads(grads):
+        return torch.cat([grad.reshape(-1) for grad in grads])
+
+    def _cosine_similarity_between_grads(grads_a, grads_b, eps: float = 1e-12) -> float:
+        flat_a = _flatten_grads(grads_a)
+        flat_b = _flatten_grads(grads_b)
+        norm_a = torch.linalg.vector_norm(flat_a)
+        norm_b = torch.linalg.vector_norm(flat_b)
+        if norm_a.item() <= 0 or norm_b.item() <= 0:
+            return 0.0
+        cosine_similarity = torch.dot(flat_a, flat_b) / (norm_a * norm_b).clamp_min(eps)
+        return float(cosine_similarity.item())
+    
+    def _merge_two_loss_grads_with_pcgrad(
+        model: nn.Module,
+        loss_real: torch.Tensor,
+        loss_fake: torch.Tensor,
+        priority_loss: str,
+        grad_other_scale: float,
+        eps: float = 1e-12,
+    ):
+        
+        """Project conflicting gradients while prioritizing one objective."""
+        params = [param for param in model.parameters() if param.requires_grad]
+        if not params:
+            return [], [], 0.0
+
+        grads_real = torch.autograd.grad(
+            loss_real,
+            params,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        grads_fake = torch.autograd.grad(
+            loss_fake,
+            params,
+            retain_graph=False,
+            allow_unused=True,
+        )
+
+        grads_real = [
+            grad.detach().clone() if grad is not None else torch.zeros_like(param)
+            for grad, param in zip(grads_real, params)
+        ]
+        grads_fake = [
+            grad.detach().clone() if grad is not None else torch.zeros_like(param)
+            for grad, param in zip(grads_fake, params)
+        ]
+
+        grad_cosine_similarity = _cosine_similarity_between_grads(
+            grads_a=grads_real,
+            grads_b=grads_fake,
+            eps=eps,
+        )
+
+        flat_real = torch.cat([grad.reshape(-1) for grad in grads_real])
+        flat_fake = torch.cat([grad.reshape(-1) for grad in grads_fake])
+
+        if priority_loss not in {"real", "fake"}:
+            raise ValueError("priority_loss must be either 'real' or 'fake'")
+        grad_other_scale = max(float(grad_other_scale), 0.0)
+
+        if priority_loss == "real":
+            flat_priority, flat_other = flat_real, flat_fake
+            grads_priority, grads_other = grads_real, grads_fake
+        else:
+            flat_priority, flat_other = flat_fake, flat_real
+            grads_priority, grads_other = grads_fake, grads_real
+
+        dot_product = torch.dot(flat_priority, flat_other)
+        if dot_product.item() < 0:
+            priority_norm_sq = torch.dot(flat_priority, flat_priority).clamp_min(eps)
+            proj_grads_other = [
+                grad_other - (dot_product / priority_norm_sq) * grad_priority 
+                for grad_priority, grad_other in zip(grads_priority, grads_other)
+            ]
+        else:
+            proj_grads_other = grads_other
+
+        merged_grads = [
+            grad_priority + grad_other_scale * grad_other
+            for grad_priority, grad_other in zip(grads_priority, proj_grads_other)
+        ]
+        return params, merged_grads, grad_cosine_similarity
+
+    num_examples = 0
+    cosine_similarity_sum = 0.0
+    cosine_similarity_count = 0
+    model.train()
+    for epoch in range(epochs):  # loop over the dataset multiple times
+        running_real_loss = 0.0
+        running_fake_loss = 0.0
+        for i, data in enumerate(trainloader):
+            images, labels = data[0].to(device), data[1].to(device)
+
+            # Labels
+            real_labels = labels
+            fake_labels = labels
+
+            optimizer.zero_grad()
+
+            # --- Build both objectives first, then apply PCGrad ---
+            real_outputs = model(images)
+            raw_loss = criterion(real_outputs, real_labels)  # positive scalar
+            mu = raw_loss.new_tensor(7.0)
+            sigma = raw_loss.new_tensor(1.0)
+            scale = 1.0 - 2.0 * Normal(mu, sigma).cdf(raw_loss.detach())  # in (-1, 1)
+
+            real_loss = scale * (-raw_loss)  
+            # gen_model(current_z, current_l)
+            input_znoises = torch.randn(labels.size(0), latent_size).to(device)
+            
+            fake_data = gen_model(input_znoises, fake_labels).detach()  # detach to avoid training generator here
+            fake_outputs = model(fake_data)
+            fake_loss =  criterion(fake_outputs, fake_labels) # synth_strength_ratio 
+
+            params, merged_grads, grad_cosine_similarity = _merge_two_loss_grads_with_pcgrad(
+                model=model,
+                loss_real=real_loss,
+                loss_fake=fake_loss,
+                priority_loss=priority_loss,
+                grad_other_scale=grad_other_scale,
+            )
+
+            for param, grad in zip(params, merged_grads):
+                param.grad = grad
+
+            # Update discriminator
+            optimizer.step()
+
+            # print statistics
+            running_real_loss += real_loss.item()
+            running_fake_loss += fake_loss.item()
+            num_examples += labels.size(0)
+            cosine_similarity_sum += grad_cosine_similarity
+            cosine_similarity_count += 1
+
+    avg_grad_cosine_similarity = cosine_similarity_sum / max(cosine_similarity_count, 1)
+    fitres.param_array["post_perturb"] = model.get_weights()
+    return num_examples, avg_grad_cosine_similarity
+
+def train_alternate(
+        model: nn.Module,
+        gen_model: nn.Module,
+        global_model: Optional[nn.Module],
+        trainloader: torch.utils.data.DataLoader,
+        epochs: int,
+        device: str,  # pylint: disable=no-member
+        learning_rate: float,
+        criterion,
+        optimizer,
+        num_classes: int,
+        latent_size: int,
+        synth_strength_ratio: float,
+        fitres: FitRes,
+        fitins: FitIns,
+        priority_loss: str = "fake",
+        grad_other_scale: float = 1.0,
+        kd_alpha: float = 1.0,
+        kd_temperature: float = 5.0,
+        attack_config: Optional[Dict] = None,
+    ) -> Tuple[int, float]:
+    """Helper function to train the model.
+
+    :param model: The local model that needs to be trained.
+    :param trainloader: The dataloader of the dataset to use for training.
+    :param epochs: Number of training rounds / epochs
+    :param device: The device to train the model on i.e. cpu or cuda. 
+    :param learning_rate: The initial learning rate the optimizer is using.
+    :param criterion: The loss function to use for model training.
+    :param optimizer: The optimizer to use for model training.
+    :param coeff_real: The coefficient for real data loss.
+    :param coeff_synth: The coefficient for synthetic data loss.
+    :returns: A tuple containing the number of examples and the average cosine similarity.
+    """
+    if global_model is not None:
+        global_model.eval()
+    if fitins is None:
+        raise ValueError("train_alternate requires FitIns")
+
+    attack_payload = fitins.gan_attack_payload
+    perturbation_direction = attack_payload.perturbation_direction if attack_payload is not None else None
+    if perturbation_direction is None:
+        raise ValueError("train_alternate requires gan_attack_payload.perturbation_direction")
+
+    num_examples = 0
+    model.to(device)
+    model.eval()
+
+    fitres_metrics = None
+    if fitres is not None:
+        fitres_metrics = cast(Dict[str, object], fitres.metrics)
+    client_id_for_log = "-"
+    if fitres_metrics is not None and "client_id" in fitres_metrics:
+        client_id_for_log = str(fitres_metrics["client_id"])
+
+
+    fitres.param_array["pre_perturb"] = model.get_weights()
+    # Step 1: build core_dataset from the 50% lowest-loss samples.
+    sample_images = []
+    sample_labels = []
+    sample_losses = []
+    with torch.no_grad():
+        for data in trainloader:
+            images, labels = data[0].to(device), data[1].to(device)
+            logits = model(images)
+            batch_losses = F.cross_entropy(logits, labels, reduction="none")
+            sample_images.append(images.detach().cpu())
+            sample_labels.append(labels.detach().cpu())
+            sample_losses.append(batch_losses.detach().cpu())
+
+    if len(sample_losses) == 0:
+        return 0, 0.0
+
+    stacked_images = torch.cat(sample_images, dim=0)
+    stacked_labels = torch.cat(sample_labels, dim=0)
+    stacked_losses = torch.cat(sample_losses, dim=0)
+
+    num_core = max(1, stacked_losses.numel() // 2)
+    core_indices = torch.argsort(stacked_losses, descending=False)[:num_core]
+    core_dataset = TensorDataset(stacked_images[core_indices], stacked_labels[core_indices])
+
+    # Step 2: apply fixed perturbation direction from attack strategy in vectorized weight space.
+    random_attack_config = attack_config.get("RANDOM_CONFIG", {}) if isinstance(attack_config, dict) else {}
+    if not isinstance(random_attack_config, dict):
+        random_attack_config = {}
+    perturbation_type = str(random_attack_config.get("TYPE", "NORMAL")).upper()
+    if perturbation_type == "NORMAL":
+        perturbation_magnitude = float(random_attack_config.get("NORM_SCALE", 1.0))
+    elif perturbation_type in {"UNIFORM", "UNIFORM-2"}:
+        perturbation_magnitude = float(random_attack_config.get("LOCATION", 0.0)) + 0.5
+    else:
+        perturbation_magnitude = 1.0
+    perturbation_magnitude= None   
+    if attack_payload is not None and attack_payload.perturbation_magnitude*attack_config["RANDOM_CONFIG"]["NORM_SCALE"] is not None:
+        perturbation_magnitude = attack_payload.perturbation_magnitude*attack_config["RANDOM_CONFIG"]["NORM_SCALE"]
+    with torch.no_grad():
+        model_weights = model.get_weights()
+        direction_tensor = perturbation_direction.to(
+            model_weights.device,
+            dtype=model_weights.dtype,
+        )
+        if direction_tensor.shape != model_weights.shape:
+            raise ValueError("perturbation_direction shape does not match model.get_weights()")
+        model.set_weights(model_weights + perturbation_magnitude * direction_tensor)
+
+    correction_direction = direction_tensor.detach()
+
+    def _project_gradients_perpendicular_to_direction() -> None:
+        grad_tensors = []
+        param_tensors = []
+        for param in model.parameters():
+            if not param.requires_grad:
+                continue
+            param_tensors.append(param)
+            grad_tensors.append(
+                param.grad if param.grad is not None else torch.zeros_like(param)
+            )
+
+        if not grad_tensors:
+            return
+
+        grad_vector = torch.nn.utils.parameters_to_vector(grad_tensors)
+        direction_vector = correction_direction.to(
+            grad_vector.device,
+            dtype=grad_vector.dtype,
+        )
+        direction_norm_sq = torch.dot(direction_vector, direction_vector).clamp_min(1e-12)
+        parallel_component = torch.dot(grad_vector, direction_vector) / direction_norm_sq
+        projected_vector = grad_vector - parallel_component * direction_vector
+
+        offset = 0
+        for param in param_tensors:
+            param_size = param.numel()
+            projected_slice = projected_vector[offset:offset + param_size].view_as(param)
+            if param.grad is None:
+                param.grad = projected_slice.clone()
+            else:
+                param.grad.copy_(projected_slice)
+            offset += param_size
+    fitres.param_array["post_perturbation"] = model.get_weights()
+
+    # Step 3: train the perturbed model on core_dataset using KD.
+    model.train()
+    core_loader = DataLoader(
+        core_dataset,
+        batch_size=getattr(trainloader, "batch_size", 32),
+        shuffle=True,
+        drop_last=False,
+    )
+
+    # optimizer.state.clear()
+    for epoch in range(epochs):
+        for data in core_loader:
+            images, labels = data[0].to(device), data[1].to(device)
+
+            # optimizer.zero_grad()
+            student_outputs = model(images)
+            teacher_outputs = None
+            if global_model is not None:
+                with torch.no_grad():
+                    teacher_outputs = global_model(images)
+            total_loss = compute_kd_loss(
+                student_outputs=student_outputs,
+                labels=labels,
+                criterion=criterion,
+                teacher_outputs=teacher_outputs,
+                kd_alpha=kd_alpha,
+                kd_temperature=kd_temperature,
+            )
+
+            total_loss.backward()
+            _project_gradients_perpendicular_to_direction()
+            optimizer.step()
+
+            num_examples += labels.size(0)
+
+    model.eval()
+    
+    fitres.param_array["post_correction"] = model.get_weights()
+
+    return num_examples, 0.0
 
 def train_malGAN_frozen(
         model: nn.Module,
@@ -504,449 +1138,33 @@ def train_malGAN_frozen(
     avg_grad_cosine_similarity = epoch_avg_grad_cosine_similarity
     return num_examples, avg_grad_cosine_similarity
 
-    
-def train_malGAN_discriminator_sequential(
-        model: nn.Module,
-        gen_model: nn.Module,
-        global_model: Optional[nn.Module],
-        trainloader: torch.utils.data.DataLoader,
-        epochs: int,
-        device: str,  # pylint: disable=no-member
-        learning_rate: float,
-        criterion,
-        optimizer,
-        num_classes: int,
-        latent_size: int,
-        synth_strength_ratio: float,
-        priority_loss: str = "fake",
-        grad_other_scale: float = 1.0,
-        kd_alpha: float = 1.0,
-        kd_temperature: float = 5.0,
-        fitres: Optional[FitRes] = None,
-        fitins: Optional[FitIns] = None,
-    ) -> Tuple[int, float]:
-    """Alternative discriminator training with two sequential updates.
-
-    For each batch: first optimize using real_loss, then optimize using fake_loss.
-    The return type matches train_malGAN_discriminator for easy swapping.
-    """
-
-
-    if global_model is not None:
-        global_model.eval()
-
-    
-
-    num_examples = 0
-    cosine_similarity_sum = 0.0
-    cosine_similarity_count = 0
-    params = [param for param in model.parameters() if param.requires_grad]
-
-    model.train()
-    for epoch in range(6*epochs):
-        running_real_loss = 0.0
-        running_fake_loss = 0.0
-        for i, data in enumerate(trainloader):
-            images, labels = data[0].to(device), data[1].to(device)
-
-            # # Step 1: optimize with real loss.
-            # optimizer.zero_grad()
-            # real_outputs = model(images)
-            # real_loss = - criterion(real_outputs, labels)
-            # real_loss.backward()
-            # real_grads = [
-            #     param.grad.detach().clone() if param.grad is not None else torch.zeros_like(param)
-            #     for param in params
-            # ]
-            # optimizer.step()
-
-            # Step 2: optimize with fake loss.
-           
-            optimizer.zero_grad()
-            input_znoises = torch.randn(labels.size(0), latent_size).to(device)
-            fake_data = gen_model(input_znoises, labels).detach()
-            fake_outputs = model(fake_data)
-            fake_loss = criterion(fake_outputs, labels)
-
-            if global_model is not None:
-                with torch.no_grad():
-                    teacher_outputs = global_model(fake_data)
-                kd_loss = F.kl_div(
-                    F.log_softmax(fake_outputs / kd_temperature, dim=1),
-                    F.softmax(teacher_outputs / kd_temperature, dim=1),
-                    reduction="batchmean",
-                ) * (kd_temperature ** 2)
-                total_loss = (1.0 - kd_alpha) * fake_loss + kd_alpha * kd_loss
-            else:
-                total_loss = fake_loss
-
-            total_loss.backward()
-            fake_grads = [
-                param.grad.detach().clone() if param.grad is not None else torch.zeros_like(param)
-                for param in params
-            ]
-            optimizer.step()
-
-            # grad_cosine_similarity = _cosine_similarity_between_grads(
-            #     grads_a=real_grads,
-            #     grads_b=fake_grads,
-            # )
-
-            # running_real_loss += real_loss.item()
-            running_fake_loss += fake_loss.item()
-            num_examples += labels.size(0)
-            # cosine_similarity_sum += grad_cosine_similarity
-            cosine_similarity_count += 1
-
-    avg_grad_cosine_similarity = cosine_similarity_sum / max(cosine_similarity_count, 1)
-    return num_examples, avg_grad_cosine_similarity
-
-
-
-def train_alternate(
-        model: nn.Module,
-        gen_model: nn.Module,
-        global_model: Optional[nn.Module],
-        trainloader: torch.utils.data.DataLoader,
-        epochs: int,
-        device: str,  # pylint: disable=no-member
-        learning_rate: float,
-        criterion,
-        optimizer,
-        num_classes: int,
-        latent_size: int,
-        synth_strength_ratio: float,
-        fitres: FitRes,
-        fitins: FitIns,
-        priority_loss: str = "fake",
-        grad_other_scale: float = 1.0,
-        kd_alpha: float = 1.0,
-        kd_temperature: float = 5.0,
-        attack_config: Optional[Dict] = None,
-    ) -> Tuple[int, float]:
-    """Helper function to train the model.
-
-    :param model: The local model that needs to be trained.
-    :param trainloader: The dataloader of the dataset to use for training.
-    :param epochs: Number of training rounds / epochs
-    :param device: The device to train the model on i.e. cpu or cuda. 
-    :param learning_rate: The initial learning rate the optimizer is using.
-    :param criterion: The loss function to use for model training.
-    :param optimizer: The optimizer to use for model training.
-    :param coeff_real: The coefficient for real data loss.
-    :param coeff_synth: The coefficient for synthetic data loss.
-    :returns: A tuple containing the number of examples and the average cosine similarity.
-    """
-    if global_model is not None:
-        global_model.eval()
-    if fitins is None:
-        raise ValueError("train_alternate requires FitIns")
-
-    attack_payload = fitins.gan_attack_payload
-    perturbation_direction = attack_payload.perturbation_direction if attack_payload is not None else None
-    if perturbation_direction is None:
-        raise ValueError("train_alternate requires gan_attack_payload.perturbation_direction")
-
-    num_examples = 0
-    model.to(device)
-    model.eval()
-
-    fitres_metrics = None
-    if fitres is not None:
-        fitres_metrics = cast(Dict[str, object], fitres.metrics)
-    client_id_for_log = "-"
-    if fitres_metrics is not None and "client_id" in fitres_metrics:
-        client_id_for_log = str(fitres_metrics["client_id"])
-
-
-    fitres.param_array["pre_perturb"] = model.get_weights()
-    # Step 1: build core_dataset from the 50% lowest-loss samples.
-    sample_images = []
-    sample_labels = []
-    sample_losses = []
-    with torch.no_grad():
-        for data in trainloader:
-            images, labels = data[0].to(device), data[1].to(device)
-            logits = model(images)
-            batch_losses = F.cross_entropy(logits, labels, reduction="none")
-            sample_images.append(images.detach().cpu())
-            sample_labels.append(labels.detach().cpu())
-            sample_losses.append(batch_losses.detach().cpu())
-
-    if len(sample_losses) == 0:
-        return 0, 0.0
-
-    stacked_images = torch.cat(sample_images, dim=0)
-    stacked_labels = torch.cat(sample_labels, dim=0)
-    stacked_losses = torch.cat(sample_losses, dim=0)
-
-    num_core = max(1, stacked_losses.numel() // 2)
-    core_indices = torch.argsort(stacked_losses, descending=False)[:num_core]
-    core_dataset = TensorDataset(stacked_images[core_indices], stacked_labels[core_indices])
-
-    # Step 2: apply fixed perturbation direction from attack strategy in vectorized weight space.
-    random_attack_config = attack_config.get("RANDOM_CONFIG", {}) if isinstance(attack_config, dict) else {}
-    if not isinstance(random_attack_config, dict):
-        random_attack_config = {}
-    perturbation_type = str(random_attack_config.get("TYPE", "NORMAL")).upper()
-    if perturbation_type == "NORMAL":
-        perturbation_magnitude = float(random_attack_config.get("NORM_SCALE", 1.0))
-    elif perturbation_type in {"UNIFORM", "UNIFORM-2"}:
-        perturbation_magnitude = float(random_attack_config.get("LOCATION", 0.0)) + 0.5
-    else:
-        perturbation_magnitude = 1.0
-    perturbation_magnitude= None   
-    if attack_payload is not None and attack_payload.perturbation_magnitude*attack_config["RANDOM_CONFIG"]["NORM_SCALE"] is not None:
-        perturbation_magnitude = attack_payload.perturbation_magnitude*attack_config["RANDOM_CONFIG"]["NORM_SCALE"]
-    with torch.no_grad():
-        model_weights = model.get_weights()
-        direction_tensor = perturbation_direction.to(
-            model_weights.device,
-            dtype=model_weights.dtype,
-        )
-        if direction_tensor.shape != model_weights.shape:
-            raise ValueError("perturbation_direction shape does not match model.get_weights()")
-        model.set_weights(model_weights + perturbation_magnitude * direction_tensor)
-
-    correction_direction = direction_tensor.detach()
-
-    def _project_gradients_perpendicular_to_direction() -> None:
-        grad_tensors = []
-        param_tensors = []
-        for param in model.parameters():
-            if not param.requires_grad:
-                continue
-            param_tensors.append(param)
-            grad_tensors.append(
-                param.grad if param.grad is not None else torch.zeros_like(param)
-            )
-
-        if not grad_tensors:
-            return
-
-        grad_vector = torch.nn.utils.parameters_to_vector(grad_tensors)
-        direction_vector = correction_direction.to(
-            grad_vector.device,
-            dtype=grad_vector.dtype,
-        )
-        direction_norm_sq = torch.dot(direction_vector, direction_vector).clamp_min(1e-12)
-        parallel_component = torch.dot(grad_vector, direction_vector) / direction_norm_sq
-        projected_vector = grad_vector - parallel_component * direction_vector
-
-        offset = 0
-        for param in param_tensors:
-            param_size = param.numel()
-            projected_slice = projected_vector[offset:offset + param_size].view_as(param)
-            if param.grad is None:
-                param.grad = projected_slice.clone()
-            else:
-                param.grad.copy_(projected_slice)
-            offset += param_size
-
-    fitres.param_array["post_perturbation"] = model.get_weights()
-
-    # Step 3: train the perturbed model on core_dataset using KD.
-    model.train()
-    core_loader = DataLoader(
-        core_dataset,
-        batch_size=getattr(trainloader, "batch_size", 32),
-        shuffle=True,
-        drop_last=False,
-    )
-
-    optimizer.state.clear()
-    for epoch in range(epochs):
-        for data in core_loader:
-            images, labels = data[0].to(device), data[1].to(device)
-
-            optimizer.zero_grad()
-            student_outputs = model(images)
-            ce_loss = criterion(student_outputs, labels)
-
-            if global_model is not None:
-                with torch.no_grad():
-                    teacher_outputs = global_model(images)
-                kd_loss = F.kl_div(
-                    F.log_softmax(student_outputs / kd_temperature, dim=1),
-                    F.softmax(teacher_outputs / kd_temperature, dim=1),
-                    reduction="batchmean",
-                ) * (kd_temperature ** 2)
-                total_loss = (1.0 - kd_alpha) * ce_loss + kd_alpha * kd_loss
-            else:
-                total_loss = ce_loss
-
-            total_loss.backward()
-            _project_gradients_perpendicular_to_direction()
-            optimizer.step()
-
-            num_examples += labels.size(0)
-
-    model.eval()
-    
-    fitres.param_array["post_correction"] = model.get_weights()
-
-    return num_examples, 0.0
-
-
-
-def train_malGAN_discriminator(
-        model: nn.Module,
-        gen_model: nn.Module,
-        global_model: Optional[nn.Module],
-        trainloader: torch.utils.data.DataLoader,
-        epochs: int,
-        device: str,  # pylint: disable=no-member
-        learning_rate: float,
-        criterion,
-        optimizer,
-        num_classes: int,
-        latent_size: int,
-        synth_strength_ratio: float,
-        priority_loss: str = "fake",
-        grad_other_scale: float = 1.0,
-        kd_alpha: float = 1.0,
-        kd_temperature: float = 5.0,
-    ) -> Tuple[int, float]:
-
-    def _flatten_grads(grads):
-        return torch.cat([grad.reshape(-1) for grad in grads])
-
-    def _cosine_similarity_between_grads(grads_a, grads_b, eps: float = 1e-12) -> float:
-        flat_a = _flatten_grads(grads_a)
-        flat_b = _flatten_grads(grads_b)
-        norm_a = torch.linalg.vector_norm(flat_a)
-        norm_b = torch.linalg.vector_norm(flat_b)
-        if norm_a.item() <= 0 or norm_b.item() <= 0:
-            return 0.0
-        cosine_similarity = torch.dot(flat_a, flat_b) / (norm_a * norm_b).clamp_min(eps)
-        return float(cosine_similarity.item())
-    
-    def _merge_two_loss_grads_with_pcgrad(
-        model: nn.Module,
-        loss_real: torch.Tensor,
-        loss_fake: torch.Tensor,
-        priority_loss: str,
-        grad_other_scale: float,
-        eps: float = 1e-12,
-    ):
-        """Project conflicting gradients while prioritizing one objective."""
-        params = [param for param in model.parameters() if param.requires_grad]
-        if not params:
-            return [], [], 0.0
-
-        grads_real = torch.autograd.grad(
-            loss_real,
-            params,
-            retain_graph=True,
-            allow_unused=True,
-        )
-        grads_fake = torch.autograd.grad(
-            loss_fake,
-            params,
-            retain_graph=False,
-            allow_unused=True,
-        )
-
-        grads_real = [
-            grad.detach().clone() if grad is not None else torch.zeros_like(param)
-            for grad, param in zip(grads_real, params)
-        ]
-        grads_fake = [
-            grad.detach().clone() if grad is not None else torch.zeros_like(param)
-            for grad, param in zip(grads_fake, params)
-        ]
-
-        grad_cosine_similarity = _cosine_similarity_between_grads(
-            grads_a=grads_real,
-            grads_b=grads_fake,
-            eps=eps,
-        )
-
-        flat_real = torch.cat([grad.reshape(-1) for grad in grads_real])
-        flat_fake = torch.cat([grad.reshape(-1) for grad in grads_fake])
-
-        if priority_loss not in {"real", "fake"}:
-            raise ValueError("priority_loss must be either 'real' or 'fake'")
-        grad_other_scale = max(float(grad_other_scale), 0.0)
-
-        if priority_loss == "real":
-            flat_priority, flat_other = flat_real, flat_fake
-            grads_priority, grads_other = grads_real, grads_fake
-        else:
-            flat_priority, flat_other = flat_fake, flat_real
-            grads_priority, grads_other = grads_fake, grads_real
-
-        dot_product = torch.dot(flat_priority, flat_other)
-        if dot_product.item() < 0:
-            priority_norm_sq = torch.dot(flat_priority, flat_priority).clamp_min(eps)
-            proj_grads_other = [
-                grad_other - (dot_product / priority_norm_sq) * grad_priority 
-                for grad_priority, grad_other in zip(grads_priority, grads_other)
-            ]
-        else:
-            proj_grads_other = grads_other
-
-        merged_grads = [
-            grad_priority + grad_other_scale * grad_other
-            for grad_priority, grad_other in zip(grads_priority, proj_grads_other)
-        ]
-        return params, merged_grads, grad_cosine_similarity
-
-    num_examples = 0
-    cosine_similarity_sum = 0.0
-    cosine_similarity_count = 0
-    model.train()
-    for epoch in range(epochs):  # loop over the dataset multiple times
-        running_real_loss = 0.0
-        running_fake_loss = 0.0
-        for i, data in enumerate(trainloader):
-            images, labels = data[0].to(device), data[1].to(device)
-
-            # Labels
-            real_labels = labels
-            fake_labels = labels
-
-            optimizer.zero_grad()
-
-            # --- Build both objectives first, then apply PCGrad ---
-            real_outputs = model(images)
-            real_loss = - criterion(real_outputs, real_labels) # (1 - synth_strength_ratio) 
-
-            # gen_model(current_z, current_l)
-            input_znoises = torch.randn(labels.size(0), latent_size).to(device)
-            
-            fake_data = gen_model(input_znoises, fake_labels).detach()  # detach to avoid training generator here
-            fake_outputs = model(fake_data)
-            fake_loss =  criterion(fake_outputs, fake_labels) # synth_strength_ratio 
-
-            params, merged_grads, grad_cosine_similarity = _merge_two_loss_grads_with_pcgrad(
-                model=model,
-                loss_real=real_loss,
-                loss_fake=fake_loss,
-                priority_loss=priority_loss,
-                grad_other_scale=grad_other_scale,
-            )
-
-            for param, grad in zip(params, merged_grads):
-                param.grad = grad
-
-            # Update discriminator
-            optimizer.step()
-
-            # print statistics
-            running_real_loss += real_loss.item()
-            running_fake_loss += fake_loss.item()
-            num_examples += labels.size(0)
-            cosine_similarity_sum += grad_cosine_similarity
-            cosine_similarity_count += 1
-
-    avg_grad_cosine_similarity = cosine_similarity_sum / max(cosine_similarity_count, 1)
-    return num_examples, avg_grad_cosine_similarity
-
-
-
 def _flatten_grads(grads):
         return torch.cat([grad.reshape(-1) for grad in grads])
+
+
+def compute_kd_loss(
+        student_outputs: torch.Tensor,
+        labels: torch.Tensor,
+        criterion,
+        teacher_outputs: Optional[torch.Tensor] = None,
+        kd_alpha: float = 1.0,
+        kd_temperature: float = 5.0,
+        base_loss: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+    """Compute KD-combined loss with gradients flowing only through student outputs."""
+    ce_loss = base_loss if base_loss is not None else criterion(student_outputs, labels)
+    if teacher_outputs is None:
+        return ce_loss
+
+    kd_temperature = float(kd_temperature)
+    kd_alpha = float(kd_alpha)
+    kd_loss = F.kl_div(
+        F.log_softmax(student_outputs / kd_temperature, dim=1),
+        F.softmax(teacher_outputs.detach() / kd_temperature, dim=1),
+        reduction="batchmean",
+    ) * (kd_temperature ** 2)
+    return (1.0 - kd_alpha) * ce_loss + kd_alpha * kd_loss
+
 
 def _cosine_similarity_between_grads(grads_a, grads_b, eps: float = 1e-12) -> float:
         flat_a = _flatten_grads(grads_a)

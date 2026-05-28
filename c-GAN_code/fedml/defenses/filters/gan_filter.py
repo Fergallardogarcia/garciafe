@@ -278,8 +278,13 @@ def perform_filteration(
         samples_per_class, 
         device
     ):
-    # Create a dataloader of the generator data
-    dataloader = DataLoader(gen_dataset, batch_size=2048, shuffle=False) #From 2048 to 1024
+    # Create a dataloader of the generator data with device-matched generator for shuffling
+    # shuffle: False to True
+    loader_device = "cuda" if torch.cuda.is_available() else "cpu"
+    loader_generator = torch.Generator(device=loader_device)
+    dataloader = DataLoader(gen_dataset, batch_size=2048, shuffle=True, generator=loader_generator) 
+
+
     threshold = filter_configs["BASELINE_OVERALL_MIN_ACC"]
 
     # Perform evaluation of all clients

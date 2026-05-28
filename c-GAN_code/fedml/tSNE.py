@@ -4,8 +4,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import multiprocessing
-from logging import DEBUG
-from typing import cast, Optional, Any
+from logging import DEBUG, INFO
+from typing import cast, Optional, Any, Tuple
 
 import copy
 import torch
@@ -13,6 +13,7 @@ import os
 from os.path import join
 import argparse
 import ntpath
+import re
 
 import fedml
 from fedml.common import log
@@ -21,7 +22,7 @@ from fedml.client import create_client
 from fedml.configs import parse_configs
 from fedml.data_handler import load_and_fetch_split, merge_splits
 from fedml.models import load_model
-from fedml.modules import ExperimentManager, setup_random_seeds
+from fedml.modules import ExperimentManager, setup_random_seeds, evaluate_gan, evaluate
 from fedml.server import (
     create_server,
     get_client_manager
@@ -30,18 +31,17 @@ from fedml.strategy import get_strategy
 from fedml.defenses.filters.gan_filter import generate_dataset
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-from matplotlib.lines import Line2D
-from matplotlib.markers import MarkerStyle
 from sklearn.decomposition import PCA
 import torch.nn.functional as F
+import torch.nn as nn
 try:
     import plotly.graph_objects as go
 except ImportError:
     go = None
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 from pathlib import Path
 
@@ -55,6 +55,10 @@ def tSNE(
         num_gpus=None,
         run_results_path: Optional[str] = None,
         max_samples_per_source: Optional[int] = None,
+        eval_only: bool = False,
+        save_class_grids: bool = False,
+        grid_samples_per_class: int = 10,
+        run_dis_gen_eval: bool = True,
     ):
 
     def make_rng(seed: int) -> Any:
@@ -89,54 +93,89 @@ def tSNE(
     # Only files directly inside the folder
     file_paths = sorted(p for p in folder.iterdir() if p.is_file())
 
+    target_rounds = {54, 55}
+    round_pattern = re.compile(r"round[-_](\d+)", re.IGNORECASE)
+
+    def round_in_targets(path: Path) -> bool:
+        match = round_pattern.search(path.name)
+        if not match:
+            return False
+        return int(match.group(1)) in target_rounds
+
     # Keep only generator weight files saved at the end of training.
     gen_model_paths = [
         p for p in file_paths
-        if p.suffix == ".pt" and ("gen-def-weights-" in p.name or "gen-attack-weights-" in p.name) and ("TEST1" in p.name) # or "gen-attack-weights-" in p.name
+        if p.suffix == ".pt" and ("gen" in p.name and "_" in p.name) #and round_in_targets(p) # or "gen-attack-weights-" in p.name
     ]
 
     discriminator_model_paths = [
-        p for p in file_paths   if p.suffix == ".pt" and ("weights-global-pre-attack-round-24" in p.name) #  "weights-global-pre-attack-round-24" , "TEST_DCGAN"
+        p for p in file_paths   if p.suffix == ".pt" and ("global" in p.name and "round" in p.name and "RESNET-18" in p.name) or "SAVE" in p.name #  "weights-global-pre-attack-round-24" , "TEST_DCGAN"
     ]
 
     def infer_gen_model_name(file_name: str):
         file_name = file_name.upper()
-        if "DCGAN" in file_name:
+        if "GEN-DCGAN" in file_name:
             return "GEN-DCGAN"
         if "SIGMOID" in file_name:
             return "TEST-SIGMOID"
         if "TANH" in file_name:
             return "TEST-TANH"
         return None
+    
+    def infer_dis_model_name(file_name: str):
+        file_name = file_name.upper()
+        if "RESNET-18" in file_name:
+            return "RESNET-18-CUSTOM"
+        if "RESNET-34" in file_name:
+            return "RESNET-34-CUSTOM"
+        return None
 
 
-    mod_conf= {"MODEL_NAME": "TEST-TANH", "NUM_CLASSES": 10, "LATENT_SIZE": 100, "OUT_CHANNEL": 3, "OUTPUT_SIZE": 32}
+    mod_conf= {"MODEL_NAME": "TEST-TANH", "NUM_CLASSES": 10, "LATENT_SIZE": 100, "OUT_CHANNEL": 3, "OUTPUT_SIZE": 32, "SAMPLES_PER_CLASS": 1000}
     MODls_configs=[]
     gen_models= []
+    gen_source_names = []
     for path in gen_model_paths:
         mod_name = infer_gen_model_name(path.name)
         if mod_name is None:
             continue
 
+        gen_source_name = path.stem
+
         gen_model_conf = {**mod_conf, "MODEL_NAME": mod_name, "WEIGHT_PATH": str(path)}
         MODls_configs.append(gen_model_conf)
 
         gen_model = load_model(model_configs=gen_model_conf)
-        saved_obj = torch.load(path, map_location="cpu", weights_only=False)
-        if isinstance(saved_obj, dict):
-            gen_model.load_state_dict(saved_obj)
-        else:
-            gen_model.set_weights(saved_obj)
+        saved_obj = torch.load(path, map_location="cuda", weights_only=False)
+        # if isinstance(saved_obj, dict):
+        #     gen_model.load_state_dict(saved_obj)
+        # else:
+        gen_model.set_weights(saved_obj)
         gen_model.eval()
         gen_models.append(gen_model)
+        gen_source_names.append(gen_source_name)
 
-    model_conf = {**mod_conf, "MODEL_NAME": "RESNET-18-CUSTOM", "WEIGHT_PATH": None}
-    dis_model = load_model(model_configs=model_conf)
-    saved_obj = torch.load(discriminator_model_paths[0], map_location="cpu", weights_only=False)
-    if isinstance(saved_obj, dict):
-        dis_model.load_state_dict(saved_obj)
-    else:
-        dis_model.set_weights(saved_obj)
+    
+    dis_models = []
+    dis_model_conf = {**mod_conf, "MODEL_NAME": "RESNET-18-CUSTOM", "WEIGHT_PATH": None}
+    for path in discriminator_model_paths:
+        mod_name = infer_dis_model_name(path.name)
+        if mod_name is None:
+            continue
+
+        dis_model_conf = {**mod_conf, "MODEL_NAME": mod_name, "WEIGHT_PATH": str(path)}
+        MODls_configs.append(dis_model_conf)
+
+        dis_model = load_model(model_configs=dis_model_conf)
+        saved_obj = torch.load(path, map_location="cuda", weights_only=False)
+        if isinstance(saved_obj, dict):
+            dis_model.load_state_dict(saved_obj)
+        else:
+            dis_model.set_weights(saved_obj)
+        dis_model.eval()
+        # store as (name, model) so we can evaluate cross-product later
+        dis_models.append((mod_name, dis_model))
+
 
     # Build one combined real dataset from all splits, then generate with each model.
     if len(train_splits) == 1:
@@ -151,10 +190,20 @@ def tSNE(
             [int(real_split[idx][1]) for idx in range(len(real_split))],
             dtype=torch.long,
         )
-    input_znoises = torch.randn(input_classes.size(0), mod_conf["LATENT_SIZE"])
+
+
+    num_classes=mod_conf["NUM_CLASSES"]
+    samples_per_class=mod_conf["SAMPLES_PER_CLASS"]
+    latent_size=mod_conf["LATENT_SIZE"]
+    
+    # Generate synthetic classes
+
+    # input_znoises = torch.randn(input_classes.size(0), mod_conf["LATENT_SIZE"])
+    input_znoises = torch.randn(num_classes * samples_per_class, latent_size)
+    input_classes = torch.arange(num_classes, dtype=torch.int64).repeat_interleave(samples_per_class)
 
     generated_datasets = []
-    for model_conf, gen_model in zip(MODls_configs, gen_models):
+    for model_conf, gen_model, gen_source_name in zip(MODls_configs, gen_models, gen_source_names):
         gen_dataset = generate_dataset(
             gen_model=gen_model,
             input_znoises=input_znoises,
@@ -162,15 +211,17 @@ def tSNE(
             device="cpu",
             batch_size=1024,
         )
-        generated_datasets.append((model_conf["MODEL_NAME"], gen_dataset))
-        log(DEBUG, f"Generated {len(gen_dataset)} samples using {model_conf['MODEL_NAME']}")
+        generated_datasets.append((gen_source_name, gen_dataset))
+        log(DEBUG, f"Generated {len(gen_dataset)} samples using {gen_source_name}")
 
-    if len(generated_datasets) == 0:
-        log(DEBUG, "No generator datasets found to run t-SNE")
-        return
-
-    # Build last-layer feature representations over real split0 plus generated datasets.
-    
+    loader_device = "cuda" if torch.cuda.is_available() else "cpu"
+    loader_generator = torch.Generator(device=loader_device)
+    generated_dataloaders = [
+        (name, torch.utils.data.DataLoader(ds, batch_size=1024, shuffle=True, generator=loader_generator))
+        for name, ds in generated_datasets
+    ]
+    # Prepare output directory for results
+    out_dir = Path(user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"])
 
     def extract_xy(dataset):
         if hasattr(dataset, "tensors"):
@@ -196,6 +247,335 @@ def tSNE(
         if x.numel() > 0 and x.max().item() > 1.0:
             x = x / 255.0
         return x
+
+    def _to_nchw_float01_for_vis(x: torch.Tensor) -> Tuple[torch.Tensor, str]:
+        x = x.detach().cpu()
+        if x.dim() == 4 and x.shape[-1] in (1, 3) and x.shape[1] not in (1, 3):
+            x = x.permute(0, 3, 1, 2)
+        x = x.float()
+        if x.numel() == 0:
+            return x, "empty"
+
+        if x.dim() == 4:
+            reduce_dims = (0, 2, 3)
+            mean = x.mean(dim=reduce_dims, keepdim=True)
+            var = x.var(dim=reduce_dims, unbiased=False, keepdim=True)
+        else:
+            mean = x.mean()
+            var = x.var(unbiased=False)
+
+        std = torch.sqrt(var + 1e-6)
+        x = (x - mean) / std
+
+        if x.dim() == 4:
+            min_val = x.amin(dim=reduce_dims, keepdim=True)
+            max_val = x.amax(dim=reduce_dims, keepdim=True)
+        else:
+            min_val = x.min()
+            max_val = x.max()
+
+        denom = (max_val - min_val).clamp(min=1e-6)
+        x = (x - min_val) / denom
+
+        return x.clamp(0.0, 1.0), "batch_norm_minmax"
+
+    def _safe_tag(name: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip())
+
+    def _save_grid_image(grid: np.ndarray, out_path: Path) -> bool:
+        if Image is not None:
+            Image.fromarray(grid).save(out_path)
+            return True
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.imsave(str(out_path), grid)
+            return True
+        except Exception:
+            return False
+
+    def save_class_grid_image(dataset, source_name: str) -> None:
+        if grid_samples_per_class is None or grid_samples_per_class <= 0:
+            log(DEBUG, "Grid samples per class <= 0; skipping class grid export")
+            return
+        data_x, data_y = extract_xy(dataset)
+        if data_x.numel() == 0 or data_y.numel() == 0:
+            log(DEBUG, f"No data available for class grid export: {source_name}")
+            return
+        data_x, norm_mode = _to_nchw_float01_for_vis(data_x)
+        if data_x.dim() != 4:
+            log(DEBUG, f"Expected 4D image tensor for grid export: {source_name}")
+            return
+        if data_y.dim() != 1:
+            data_y = data_y.view(-1)
+
+        if data_x.size(1) == 1:
+            data_x = data_x.repeat(1, 3, 1, 1)
+        if data_x.size(1) != 3:
+            log(DEBUG, f"Unsupported channel count for grid export: {source_name}")
+            return
+
+        height = int(data_x.size(2))
+        width = int(data_x.size(3))
+        grid_height = num_classes * height
+        grid_width = grid_samples_per_class * width
+        grid = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
+        sample_min = float("inf")
+        sample_max = float("-inf")
+        sample_sum = 0.0
+        sample_count = 0
+
+        for class_id in range(num_classes):
+            class_idx = torch.nonzero(data_y == class_id, as_tuple=False).view(-1)
+            if class_idx.numel() == 0:
+                continue
+            if class_idx.numel() > grid_samples_per_class:
+                pick = sampling_rng.choice(class_idx.numel(), size=grid_samples_per_class, replace=False)
+                pick_idx = torch.as_tensor(pick, dtype=torch.long, device=class_idx.device)
+                class_idx = class_idx[pick_idx]
+            else:
+                class_idx = class_idx[:grid_samples_per_class]
+            class_imgs = data_x[class_idx].clamp(0.0, 1.0)
+            sample_min = min(sample_min, class_imgs.min().item())
+            sample_max = max(sample_max, class_imgs.max().item())
+            sample_sum += class_imgs.mean().item() * class_imgs.numel()
+            sample_count += class_imgs.numel()
+            class_imgs_u8 = class_imgs.mul(255.0).to(torch.uint8)
+            for col_idx in range(class_imgs_u8.size(0)):
+                img_np = class_imgs_u8[col_idx].permute(1, 2, 0).cpu().numpy()
+                y0 = class_id * height
+                x0 = col_idx * width
+                grid[y0:y0 + height, x0:x0 + width] = img_np
+
+        if sample_count > 0:
+            sample_mean = sample_sum / sample_count
+            log(DEBUG, f"Grid norm {source_name}: mode={norm_mode}")
+            log(DEBUG, f"Grid sample stats {source_name}: min={sample_min:.4f}, max={sample_max:.4f}, mean={sample_mean:.4f}")
+
+        out_grid = out_dir / f"class_grid_{_safe_tag(source_name)}_{exp_name}.png"
+        if _save_grid_image(grid, out_grid):
+            log(DEBUG, f"Saved class grid image to {out_grid}")
+        else:
+            log(DEBUG, f"Could not save class grid image (missing PIL/matplotlib): {out_grid}")
+
+    def _entropy_from_probs(probs: np.ndarray) -> float:
+        probs = probs[probs > 0]
+        if probs.size == 0:
+            return 0.0
+        return float(-(probs * np.log(probs)).sum())
+
+    def compute_diversity_metrics(
+        features_np: np.ndarray,
+        labels_np: np.ndarray,
+        num_classes: int,
+        rng: Any,
+        max_pairwise_samples: int = 1000,
+    ) -> Tuple[dict, np.ndarray]:
+        nan = float("nan")
+        metrics = {
+            "n_samples": 0.0,
+            "class_coverage": nan,
+            "coverage_ratio": nan,
+            "class_entropy": nan,
+            "effective_num_classes": nan,
+            "feature_var_mean": nan,
+            "feature_norm_mean": nan,
+            "within_class_var_mean": nan,
+            "between_class_mean_l2": nan,
+            "pairwise_l2_mean": nan,
+            "pairwise_cosine_dist_mean": nan,
+        }
+
+        features = np.asarray(features_np)
+        labels = np.asarray(labels_np).astype(np.int64, copy=False)
+        if features.ndim == 1:
+            features = features.reshape(-1, 1)
+
+        n_samples = int(features.shape[0]) if features.size else 0
+        metrics["n_samples"] = float(n_samples)
+        if n_samples == 0 or num_classes <= 0:
+            return metrics, np.zeros((max(num_classes, 0),), dtype=np.int64)
+
+        class_counts = np.bincount(labels, minlength=num_classes)
+        if class_counts.size > num_classes:
+            class_counts = class_counts[:num_classes]
+
+        total = float(class_counts.sum())
+        if total > 0:
+            probs = class_counts.astype(np.float64) / total
+            entropy = _entropy_from_probs(probs)
+            if num_classes > 1:
+                metrics["class_entropy"] = entropy / float(np.log(num_classes))
+            else:
+                metrics["class_entropy"] = 0.0
+            metrics["effective_num_classes"] = float(np.exp(entropy))
+        else:
+            probs = np.zeros((num_classes,), dtype=np.float64)
+
+        class_coverage = int((class_counts > 0).sum())
+        metrics["class_coverage"] = float(class_coverage)
+        metrics["coverage_ratio"] = float(class_coverage) / float(num_classes) if num_classes > 0 else nan
+
+        if n_samples >= 2:
+            metrics["feature_var_mean"] = float(np.var(features, axis=0).mean())
+        metrics["feature_norm_mean"] = float(np.linalg.norm(features, axis=1).mean())
+
+        within_vars = []
+        for class_id in range(num_classes):
+            class_mask = labels == class_id
+            if class_mask.sum() >= 2:
+                within_vars.append(np.var(features[class_mask], axis=0).mean())
+        if within_vars:
+            metrics["within_class_var_mean"] = float(np.mean(within_vars))
+
+        class_means = []
+        for class_id in range(num_classes):
+            class_mask = labels == class_id
+            if class_mask.sum() > 0:
+                class_means.append(features[class_mask].mean(axis=0))
+        if len(class_means) >= 2:
+            means_tensor = torch.as_tensor(np.stack(class_means), dtype=torch.float32)
+            mean_dist = torch.pdist(means_tensor, p=2)
+            if mean_dist.numel() > 0:
+                metrics["between_class_mean_l2"] = float(mean_dist.mean().item())
+
+        sample_n = min(max_pairwise_samples, n_samples)
+        if sample_n >= 2:
+            if sample_n < n_samples:
+                sample_idx = rng.choice(n_samples, size=sample_n, replace=False)
+                sample_feat = features[sample_idx]
+            else:
+                sample_feat = features
+
+            sample_tensor = torch.as_tensor(sample_feat, dtype=torch.float32)
+            pairwise_l2 = torch.pdist(sample_tensor, p=2)
+            if pairwise_l2.numel() > 0:
+                metrics["pairwise_l2_mean"] = float(pairwise_l2.mean().item())
+
+            norms = torch.linalg.norm(sample_tensor, dim=1, keepdim=True).clamp(min=1e-12)
+            normed = sample_tensor / norms
+            cos_matrix = normed @ normed.T
+            tri_idx = torch.triu_indices(sample_n, sample_n, offset=1)
+            cos_vals = cos_matrix[tri_idx[0], tri_idx[1]]
+            if cos_vals.numel() > 0:
+                metrics["pairwise_cosine_dist_mean"] = float(1.0 - cos_vals.mean().item())
+
+        return metrics, class_counts
+
+    if max_samples_per_source is not None and max_samples_per_source <= 0:
+        max_samples_per_source = None
+
+    sampling_rng = make_rng(seed=user_configs["SERVER_CONFIGS"]["RANDOM_SEED"])
+
+    if save_class_grids:
+        save_class_grid_image(real_split, "real")
+        for gen_name, gen_dataset in generated_datasets:
+            save_class_grid_image(gen_dataset, f"gen_{gen_name}")
+
+    if len(generated_datasets) == 0:
+        log(DEBUG, "No generator datasets found to run t-SNE")
+        return
+
+    if len(dis_models) == 0:
+        log(DEBUG, "No discriminator models found; skipping evaluations")
+        return
+
+    if run_dis_gen_eval:
+        # Evaluate Cartesian product: every discriminator vs every generated dataset
+        n_dis = len(dis_models)
+        n_gen = len(generated_dataloaders)
+        dis_names = [name for name, _ in dis_models]
+        gen_names = [name for name, _ in generated_dataloaders]
+        acc_matrix = np.full((n_dis, n_gen), np.nan, dtype=np.float32)
+        loss_matrix = np.full((n_dis, n_gen), np.nan, dtype=np.float32)
+
+        for i, (dname, dmodel) in enumerate(dis_models):
+            for j, (gname, gloader) in enumerate(generated_dataloaders):
+                stats = evaluate(
+                    model=dmodel,
+                    testloader=gloader,
+                    device="cuda",
+                    criterion=nn.CrossEntropyLoss(),
+                )
+                loss_matrix[i, j] = stats[0]
+                acc_matrix[i, j] = stats[1]
+                log(INFO, f"Eval dis={dname} on gen={gname}: loss={stats[0]:.4f}, accuracy={stats[1]:.4f}")
+
+        out_eval_npz = out_dir / f"dis_vs_gen_eval_{exp_name}.npz"
+        np.savez(
+            out_eval_npz,
+            dis_names=np.array(dis_names, dtype=object),
+            gen_names=np.array(gen_names, dtype=object),
+            loss=loss_matrix,
+            accuracy=acc_matrix,
+        )
+        log(DEBUG, f"Saved discriminator vs generator evaluation matrix to {out_eval_npz}")
+
+        # Save CSV summaries and heatmap visualizations for quick inspection.
+        try:
+            import csv
+
+            out_eval_csv = out_dir / f"dis_vs_gen_eval_{exp_name}.csv"
+            with open(out_eval_csv, "w", newline="") as csvf:
+                writer = csv.writer(csvf)
+                writer.writerow(["discriminator\\generator"] + gen_names)
+                for i, dname in enumerate(dis_names):
+                    row = [dname] + [f"{acc_matrix[i, j]:.4f}" if not np.isnan(acc_matrix[i, j]) else "" for j in range(n_gen)]
+                    writer.writerow(row)
+            log(DEBUG, f"Saved discriminator vs generator accuracy CSV to {out_eval_csv}")
+
+            out_loss_csv = out_dir / f"dis_vs_gen_loss_{exp_name}.csv"
+            with open(out_loss_csv, "w", newline="") as csvf:
+                writer = csv.writer(csvf)
+                writer.writerow(["discriminator\\generator"] + gen_names)
+                for i, dname in enumerate(dis_names):
+                    row = [dname] + [f"{loss_matrix[i, j]:.4f}" if not np.isnan(loss_matrix[i, j]) else "" for j in range(n_gen)]
+                    writer.writerow(row)
+            log(DEBUG, f"Saved discriminator vs generator loss CSV to {out_loss_csv}")
+        except Exception:
+            log(DEBUG, "Could not save CSV summaries for eval matrices")
+
+        if go is not None:
+            try:
+                # Interactive heatmap for accuracy using Plotly
+                fig_acc = go.Figure(
+                    data=go.Heatmap(z=acc_matrix.tolist(), x=list(gen_names), y=list(dis_names), colorscale="Viridis", zmin=0.0, zmax=1.0)
+                )
+                fig_acc.update_layout(title="Discriminator vs Generator Accuracy", xaxis=dict(tickangle=-45))
+                out_eval_acc_html = out_dir / f"dis_vs_gen_accuracy_{exp_name}.html"
+                fig_acc.write_html(str(out_eval_acc_html), include_plotlyjs="cdn")
+                log(DEBUG, f"Saved discriminator vs generator accuracy interactive HTML to {out_eval_acc_html}")
+
+                # Interactive heatmap for loss (None for NaN)
+                loss_z = np.where(np.isfinite(loss_matrix), loss_matrix, None).tolist()
+                fig_loss = go.Figure(
+                    data=go.Heatmap(z=loss_z, x=list(gen_names), y=list(dis_names), colorscale="Magma")
+                )
+                fig_loss.update_layout(title="Discriminator vs Generator Loss", xaxis=dict(tickangle=-45))
+                out_eval_loss_html = out_dir / f"dis_vs_gen_loss_{exp_name}.html"
+                fig_loss.write_html(str(out_eval_loss_html), include_plotlyjs="cdn")
+                log(DEBUG, f"Saved discriminator vs generator loss interactive HTML to {out_eval_loss_html}")
+            except Exception:
+                log(DEBUG, "Could not save eval heatmap visualizations")
+        else:
+            log(INFO, "Plotly is not installed; skipping interactive eval heatmaps")
+            # continue but skip plotting sections below
+    else:
+        log(INFO, "Skipping discriminator vs generator evaluations (disabled)")
+
+    # If caller only requested evaluation, stop here
+    if eval_only:
+        if run_dis_gen_eval:
+            log(INFO, "Eval-only requested; skipping feature extraction and plotting")
+        else:
+            log(INFO, "Eval-only requested but evaluations disabled; skipping downstream work")
+        return
+
+    # keep first discriminator as primary for downstream representation extraction
+    primary_dis_name, dis_model = dis_models[0]
+
+    # Build last-layer feature representations over real split0 plus generated datasets.
+    
 
     def extract_last_layer_repr(model, data_x: torch.Tensor, batch_size: int = 1024, layer: int = 3) -> torch.Tensor:
         model = model.to("cpu")
@@ -249,11 +629,6 @@ def tSNE(
     source_names = [name for name, _ in (real_sources + synthetic_sources)]
     all_datasets = [ds for _, ds in (real_sources + synthetic_sources)]
 
-    if max_samples_per_source is not None and max_samples_per_source <= 0:
-        max_samples_per_source = None
-
-    sampling_rng = make_rng(seed=user_configs["SERVER_CONFIGS"]["RANDOM_SEED"])
-
     real_x = []
     all_x = []
     all_y = []
@@ -284,6 +659,66 @@ def tSNE(
         source_label_tensors.append(data_y.detach().cpu().long())
         source_logits_tensors.append(logits)
 
+    diversity_rows = []
+    diversity_class_counts = []
+    for source_id, source_name in enumerate(source_names):
+        metrics, class_counts = compute_diversity_metrics(
+            features_np=all_x[source_id],
+            labels_np=all_y[source_id],
+            num_classes=num_classes,
+            rng=sampling_rng,
+        )
+        metrics["source_name"] = source_name
+        metrics["source_type"] = "real" if source_id < len(real_sources) else "gen"
+        diversity_rows.append(metrics)
+        diversity_class_counts.append(class_counts)
+
+    if diversity_rows:
+        try:
+            import csv
+
+            metric_fields = [
+                "n_samples",
+                "class_coverage",
+                "coverage_ratio",
+                "class_entropy",
+                "effective_num_classes",
+                "feature_var_mean",
+                "feature_norm_mean",
+                "within_class_var_mean",
+                "between_class_mean_l2",
+                "pairwise_l2_mean",
+                "pairwise_cosine_dist_mean",
+            ]
+
+            out_div_csv = out_dir / f"diversity_metrics_{exp_name}.csv"
+            with open(out_div_csv, "w", newline="") as csvf:
+                writer = csv.writer(csvf)
+                writer.writerow(["source", "source_type"] + metric_fields)
+                for row in diversity_rows:
+                    writer.writerow(
+                        [row["source_name"], row["source_type"]]
+                        + ["" if np.isnan(row[field]) else f"{row[field]:.6f}" for field in metric_fields]
+                    )
+            log(DEBUG, f"Saved diversity metrics CSV to {out_div_csv}")
+
+            out_div_npz = out_dir / f"diversity_metrics_{exp_name}.npz"
+            metrics_matrix = np.array(
+                [[row[field] for field in metric_fields] for row in diversity_rows],
+                dtype=np.float32,
+            )
+            np.savez(
+                out_div_npz,
+                source_names=np.array([row["source_name"] for row in diversity_rows], dtype=object),
+                source_types=np.array([row["source_type"] for row in diversity_rows], dtype=object),
+                metric_names=np.array(metric_fields, dtype=object),
+                metrics=metrics_matrix,
+                class_counts=np.stack(diversity_class_counts) if diversity_class_counts else np.empty((0, num_classes), dtype=np.int64),
+            )
+            log(DEBUG, f"Saved diversity metrics NPZ to {out_div_npz}")
+        except Exception:
+            log(DEBUG, "Could not save diversity metrics")
+
     real_features = np.concatenate(real_x, axis=0)
     features = np.concatenate(all_x, axis=0)
     labels = np.concatenate(all_y, axis=0)
@@ -301,8 +736,6 @@ def tSNE(
     pca.fit(real_features)
     embedding = pca.transform(features)
 
-    markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">"]
-    cmap = cm.get_cmap("tab10")
     synthetic_colors = [
         "#ff1744",
         "#00e5ff",
@@ -314,82 +747,13 @@ def tSNE(
         "#f50057",
     ]
 
-    fig = plt.figure(figsize=(11, 8), constrained_layout=True)
-    ax = fig.add_subplot(111, projection="3d")
-    for source_id, source_name in enumerate(source_names):
-        mask = source_ids == source_id
-        if source_id < len(real_sources):
-            point_colors = labels[mask]
-            point_cmap = cmap
-            point_size = 4
-            point_alpha = 0.35
-        else:
-            synthetic_index = source_id - len(real_sources)
-            point_colors = synthetic_colors[synthetic_index % len(synthetic_colors)]
-            point_cmap = None
-            point_size = 8
-            point_alpha = 0.75
-        ax.scatter(
-            embedding[mask, 0],
-            embedding[mask, 1],
-            embedding[mask, 2],
-            c=point_colors,
-            cmap=point_cmap,
-            vmin=0,
-            vmax=9,
-            marker=MarkerStyle(markers[source_id % len(markers)]),
-            s=point_size,
-            alpha=point_alpha,
-            linewidths=0.0,
-        )
-
-    ax.set_title("PCA 3D (fit on real: merged splits; projected synthetic)")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_zticks([])
-
-    source_handles = [
-        Line2D(
-            [0],
-            [0],
-            marker=markers[i % len(markers)],
-            linestyle="",
-            markerfacecolor=("black" if i < len(real_sources) else synthetic_colors[(i - len(real_sources)) % len(synthetic_colors)]),
-            markeredgecolor=("black" if i < len(real_sources) else synthetic_colors[(i - len(real_sources)) % len(synthetic_colors)]),
-            markersize=6,
-            label=name,
-        )
-        for i, name in enumerate(source_names)
-    ]
-    source_legend = ax.legend(handles=source_handles, title="Source", loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    ax.add_artist(source_legend)
-
-    class_handles = [
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            linestyle="",
-            markerfacecolor=cmap(class_id / 9.0),
-            markeredgecolor=cmap(class_id / 9.0),
-            markersize=6,
-            label=f"Class {class_id}",
-        )
-        for class_id in range(10)
-    ]
-    ax.legend(handles=class_handles, title="Class", loc="lower left", bbox_to_anchor=(1.01, 0.0))
-
-    out_dir = Path(user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"])
-    out_plot = out_dir / f"pca3_lastlayer_realfit_projected_{exp_name}.png"
+    out_plot = out_dir / f"pca3_lastlayer_realfit_projected_{exp_name}.html"
     out_npz = out_dir / f"pca3_lastlayer_realfit_projected_{exp_name}.npz"
     out_html = out_dir / f"pca3_lastlayer_realfit_projected_{exp_name}.html"
-    out_cos_plot = out_dir / f"class_alignment_cosine_norm_{exp_name}.png"
     out_cos_npz = out_dir / f"class_alignment_cosine_norm_{exp_name}.npz"
-    out_cls_plot = out_dir / f"class_accuracy_crossentropy_{exp_name}.png"
     out_cls_npz = out_dir / f"class_accuracy_crossentropy_{exp_name}.npz"
-    out_dist_plot = out_dir / f"class_mean_distance_{exp_name}.png"
     out_dist_npz = out_dir / f"class_mean_distance_{exp_name}.npz"
-    fig.savefig(str(out_plot), dpi=220, bbox_inches="tight")
+    # Save arrays for plotting/inspection; interactive plots use Plotly below when available
     np.savez(
         out_npz,
         embedding=embedding,
@@ -473,85 +837,7 @@ def tSNE(
         np.vstack(projection_std_rows) if projection_std_rows else np.empty((0, n_classes), dtype=np.float32)
     )
 
-    fig_align, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, constrained_layout=True)
-    ax_cos, ax_norm = axes
-
-    for class_id in class_ids:
-        ax_cos.axvline(class_id, color="#d9d9d9", linewidth=0.7, zorder=0)
-
-    for idx, source_name in enumerate(metric_source_names):
-        if idx < len(real_sources):
-            color = real_colors[idx % len(real_colors)]
-        else:
-            color = synthetic_colors[(idx - len(real_sources)) % len(synthetic_colors)]
-
-        y_values = cosine_by_source[idx]
-        valid_mask = ~np.isnan(y_values)
-        if not np.any(valid_mask):
-            continue
-
-        x_values = class_ids[valid_mask]
-        y_values = y_values[valid_mask]
-        y_err = np.full(y_values.shape, cosine_std_by_source[idx], dtype=np.float32)
-        ax_cos.errorbar(
-            x_values,
-            y_values,
-            yerr=y_err,
-            marker="o",
-            linewidth=1.8,
-            markersize=4,
-            color=color,
-            label=source_name,
-            capsize=3,
-        )
-
-    ax_cos.set_ylabel("Cosine Similarity")
-    ax_cos.set_ylim(-1.05, 1.05)
-    ax_cos.set_title("Class-wise alignment: class weight vs class mean embedding")
-    if len(metric_source_names) > 0:
-        ax_cos.legend(title="Source", loc="best")
-
-    for class_id in class_ids:
-        ax_norm.axvline(class_id, color="#e6e6e6", linewidth=0.7, zorder=0)
-    ax_norm.plot(class_ids, class_weight_norms, marker="s", color="#1f77b4", linewidth=1.8, label="||w_c||")
-    ax_proj = ax_norm.twinx()
-
-    for idx, source_name in enumerate(metric_source_names):
-        if idx < len(real_sources):
-            color = real_colors[idx % len(real_colors)]
-        else:
-            color = synthetic_colors[(idx - len(real_sources)) % len(synthetic_colors)]
-
-        y_values = projection_mean_by_source[idx]
-        y_errors = projection_std_by_source[idx]
-        valid_mask = ~np.isnan(y_values)
-        if not np.any(valid_mask):
-            continue
-
-        ax_proj.errorbar(
-            class_ids[valid_mask],
-            y_values[valid_mask],
-            yerr=y_errors[valid_mask],
-            marker="^",
-            linestyle="--",
-            linewidth=1.6,
-            markersize=4,
-            capsize=3,
-            color=color,
-            alpha=0.9,
-            label=f"{source_name}: avg |x · w_c_hat|",
-        )
-
-    ax_norm.set_ylabel("||w_c||")
-    ax_proj.set_ylabel("avg |x · w_c_hat|")
-    ax_norm.set_xlabel("Class")
-    ax_norm.set_xticks(class_ids)
-
-    h1, l1 = ax_norm.get_legend_handles_labels()
-    h2, l2 = ax_proj.get_legend_handles_labels()
-    ax_norm.legend(h1 + h2, l1 + l2, loc="best", fontsize=8)
-
-    fig_align.savefig(str(out_cos_plot), dpi=220, bbox_inches="tight")
+    # Save class alignment arrays (plots generated with Plotly below when available)
     np.savez(
         out_cos_npz,
         class_ids=class_ids,
@@ -562,7 +848,6 @@ def tSNE(
         projection_mean_by_source=projection_mean_by_source,
         projection_std_by_source=projection_std_by_source,
     )
-    log(DEBUG, f"Saved class alignment plot to {out_cos_plot}")
     log(DEBUG, f"Saved class alignment arrays to {out_cos_npz}")
 
     acc_rows = []
@@ -596,56 +881,7 @@ def tSNE(
     class_accuracy_by_source = np.vstack(acc_rows) if acc_rows else np.empty((0, n_classes), dtype=np.float32)
     class_loss_by_source = np.vstack(loss_rows) if loss_rows else np.empty((0, n_classes), dtype=np.float32)
 
-    fig_cls, axes_cls = plt.subplots(2, 1, figsize=(12, 7), sharex=True, constrained_layout=True)
-    ax_acc, ax_loss = axes_cls
-
-    for class_id in class_ids:
-        ax_acc.axvline(class_id, color="#d9d9d9", linewidth=0.7, zorder=0)
-        ax_loss.axvline(class_id, color="#e6e6e6", linewidth=0.7, zorder=0)
-
-    for idx, source_name in enumerate(source_names):
-        if idx < len(real_sources):
-            color = real_colors[idx % len(real_colors)]
-        else:
-            color = synthetic_colors[(idx - len(real_sources)) % len(synthetic_colors)]
-
-        acc_values = class_accuracy_by_source[idx]
-        acc_mask = ~np.isnan(acc_values)
-        if np.any(acc_mask):
-            ax_acc.plot(
-                class_ids[acc_mask],
-                acc_values[acc_mask],
-                marker="o",
-                linewidth=1.8,
-                markersize=4,
-                color=color,
-                label=source_name,
-            )
-
-        loss_values = class_loss_by_source[idx]
-        loss_mask = ~np.isnan(loss_values)
-        if np.any(loss_mask):
-            ax_loss.plot(
-                class_ids[loss_mask],
-                loss_values[loss_mask],
-                marker="s",
-                linewidth=1.8,
-                markersize=4,
-                color=color,
-                label=source_name,
-            )
-
-    ax_acc.set_ylabel("Accuracy")
-    ax_acc.set_ylim(-0.02, 1.02)
-    ax_acc.set_title("Per-class discriminator accuracy")
-    ax_acc.legend(title="Source", loc="best")
-
-    ax_loss.set_ylabel("Cross-Entropy")
-    ax_loss.set_xlabel("Class")
-    ax_loss.set_title("Per-class discriminator cross-entropy")
-    ax_loss.set_xticks(class_ids)
-
-    fig_cls.savefig(str(out_cls_plot), dpi=220, bbox_inches="tight")
+    # Save class accuracy/loss arrays (interactive plots with Plotly when available)
     np.savez(
         out_cls_npz,
         class_ids=class_ids,
@@ -653,7 +889,6 @@ def tSNE(
         class_accuracy_by_source=class_accuracy_by_source,
         class_loss_by_source=class_loss_by_source,
     )
-    log(DEBUG, f"Saved class accuracy/loss plot to {out_cls_plot}")
     log(DEBUG, f"Saved class accuracy/loss arrays to {out_cls_npz}")
 
     class_mean_per_source = []
@@ -688,37 +923,13 @@ def tSNE(
         np.vstack(dataset_pair_distance_rows) if dataset_pair_distance_rows else np.empty((0, n_classes), dtype=np.float32)
     )
 
-    fig_dist, ax_dist = plt.subplots(figsize=(12, 5), constrained_layout=True)
-    for class_id in class_ids:
-        ax_dist.axvline(class_id, color="#e6e6e6", linewidth=0.7, zorder=0)
-
-    for pair_name, pair_row in zip(dataset_pair_names, dataset_pair_distance_by_class):
-        valid_mask = ~np.isnan(pair_row)
-        if not np.any(valid_mask):
-            continue
-        ax_dist.plot(
-            class_ids[valid_mask],
-            pair_row[valid_mask],
-            marker="o",
-            linewidth=1.8,
-            markersize=4,
-            label=pair_name,
-        )
-
-    ax_dist.set_xlabel("Class")
-    ax_dist.set_ylabel("Distance between dataset class means")
-    ax_dist.set_title("Per-class inter-dataset separation in discriminator feature space")
-    ax_dist.set_xticks(class_ids)
-    ax_dist.legend(loc="best", fontsize=8)
-
-    fig_dist.savefig(str(out_dist_plot), dpi=220, bbox_inches="tight")
+    # Save class mean distance arrays (interactive plots with Plotly when available)
     np.savez(
         out_dist_npz,
         source_names=np.array(source_names, dtype=object),
         dataset_pair_names=np.array(dataset_pair_names, dtype=object),
         dataset_pair_distance_by_class=dataset_pair_distance_by_class,
     )
-    log(DEBUG, f"Saved class mean distance plot to {out_dist_plot}")
     log(DEBUG, f"Saved class mean distance arrays to {out_dist_npz}")
 
     if go is not None:
@@ -768,15 +979,202 @@ def tSNE(
         )
         plotly_fig.write_html(str(out_html), include_plotlyjs="cdn")
         log(DEBUG, f"Saved interactive PCA HTML to {out_html}")
+        # Also produce additional interactive plots (class alignment, accuracy/loss, mean distances)
+        try:
+            from plotly.subplots import make_subplots
+
+            # Class alignment (cosine + projections)
+            fig_align = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=(
+                "Class-wise alignment: class weight vs class mean embedding",
+                "Class weight norms and avg |x · w_c_hat| per class",
+            ))
+            for idx, source_name in enumerate(metric_source_names):
+                color = real_colors[idx % len(real_colors)] if idx < len(real_sources) else synthetic_colors[(idx - len(real_sources)) % len(synthetic_colors)]
+                y = cosine_by_source[idx] if cosine_by_source.size else np.array([])
+                mask = ~np.isnan(y)
+                if mask.any():
+                    fig_align.add_trace(
+                        go.Scatter(x=class_ids[mask].tolist(), y=y[mask].tolist(), mode="lines+markers", name=source_name, line=dict(color=color)),
+                        row=1, col=1
+                    )
+
+                pm = projection_mean_by_source[idx] if projection_mean_by_source.size else np.array([])
+                ps = projection_std_by_source[idx] if projection_std_by_source.size else np.array([])
+                mask2 = ~np.isnan(pm)
+                if mask2.any():
+                    fig_align.add_trace(
+                        go.Scatter(x=class_ids[mask2].tolist(), y=pm[mask2].tolist(), mode="lines+markers", name=f"{source_name}: avg |x·w|", line=dict(color=color)),
+                        row=2, col=1
+                    )
+
+            out_align_html = out_dir / f"class_alignment_{exp_name}.html"
+            fig_align.update_layout(height=700)
+            fig_align.write_html(str(out_align_html), include_plotlyjs="cdn")
+            log(DEBUG, f"Saved interactive class alignment HTML to {out_align_html}")
+        except Exception:
+            log(DEBUG, "Could not create Plotly class alignment plot")
+
+        try:
+            # Per-class accuracy and loss
+            fig_cls = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Per-class discriminator accuracy", "Per-class discriminator cross-entropy"))
+            for idx, source_name in enumerate(source_names):
+                color = real_colors[idx % len(real_colors)] if idx < len(real_sources) else synthetic_colors[(idx - len(real_sources)) % len(synthetic_colors)]
+                acc_vals = class_accuracy_by_source[idx] if class_accuracy_by_source.size else np.array([])
+                loss_vals = class_loss_by_source[idx] if class_loss_by_source.size else np.array([])
+                maska = ~np.isnan(acc_vals)
+                maskl = ~np.isnan(loss_vals)
+                if maska.any():
+                    fig_cls.add_trace(go.Scatter(x=class_ids[maska].tolist(), y=acc_vals[maska].tolist(), mode="lines+markers", name=source_name, line=dict(color=color)), row=1, col=1)
+                if maskl.any():
+                    fig_cls.add_trace(go.Scatter(x=class_ids[maskl].tolist(), y=loss_vals[maskl].tolist(), mode="lines+markers", name=source_name, line=dict(color=color)), row=2, col=1)
+            out_cls_html = out_dir / f"class_accuracy_crossentropy_{exp_name}.html"
+            fig_cls.update_layout(height=700)
+            fig_cls.write_html(str(out_cls_html), include_plotlyjs="cdn")
+            log(DEBUG, f"Saved interactive class accuracy/loss HTML to {out_cls_html}")
+        except Exception:
+            log(DEBUG, "Could not create Plotly class accuracy/loss plot")
+
+        try:
+            # Per-class inter-dataset separation
+            fig_dist = go.Figure()
+            for pair_name, pair_row in zip(dataset_pair_names, dataset_pair_distance_by_class):
+                mask = ~np.isnan(pair_row)
+                if not mask.any():
+                    continue
+                fig_dist.add_trace(go.Scatter(x=class_ids[mask].tolist(), y=pair_row[mask].tolist(), mode="lines+markers", name=pair_name))
+            out_dist_html = out_dir / f"class_mean_distance_{exp_name}.html"
+            fig_dist.update_layout(title="Per-class inter-dataset separation in discriminator feature space", height=400)
+            fig_dist.write_html(str(out_dist_html), include_plotlyjs="cdn")
+            log(DEBUG, f"Saved interactive class mean distance HTML to {out_dist_html}")
+        except Exception:
+            log(DEBUG, "Could not create Plotly class mean distance plot")
     else:
         log(DEBUG, "Plotly not installed; skipping interactive HTML export")
 
     log(DEBUG, f"Saved PCA plot to {out_plot}")
     log(DEBUG, f"Saved PCA arrays to {out_npz}")
 
-
+    # Compute dominant directions (PCA) for each layer and plot variance explained
+    try:
+        # Identify available layers in discriminator
+        available_layers = []
+        if hasattr(dis_model, "features"):
+            # For ResNet-like models with features() method
+            available_layers = list(range(1, 6))  # layers 1-5
+        
+        if not available_layers:
+            log(DEBUG, "Cannot extract per-layer features; skipping variance analysis")
+        else:
+            n_layers = len(available_layers)
+            n_sources = len(source_names)
+            
+            # Extract representations from each layer for each dataset
+            layer_reprs_by_source = []  # [source][layer] -> tensor of shape (n_samples, n_features)
+            
+            for source_id, dataset in enumerate(all_datasets):
+                data_x, _ = extract_xy(dataset)
+                data_x = _to_nchw_float01(data_x)
+                
+                layer_reprs = []
+                for layer_id in available_layers:
+                    layer_repr = extract_last_layer_repr(
+                        model=dis_model,
+                        data_x=data_x,
+                        batch_size=1024,
+                        layer=layer_id
+                    )
+                    layer_reprs.append(layer_repr.numpy())
+                layer_reprs_by_source.append(layer_reprs)
+            
+            layer_variance_data = {}
+            
+            # Use Plotly if available, else fall back to matplotlib
+            if go is not None:
+                from plotly.subplots import make_subplots
+                
+                n_rows = (n_layers + 1) // 2
+                n_cols = 2
+                fig_plotly = make_subplots(
+                    rows=n_rows,
+                    cols=n_cols,
+                    subplot_titles=[f"Layer {lid}" for lid in available_layers],
+                    specs=[[{"secondary_y": False} for _ in range(n_cols)] for _ in range(n_rows)],
+                )
+                
+                for layer_idx, layer_id in enumerate(available_layers):
+                    row = (layer_idx // n_cols) + 1
+                    col = (layer_idx % n_cols) + 1
+                    
+                    layer_variance_data[layer_id] = {}
+                    
+                    for source_id, source_name in enumerate(source_names):
+                        layer_repr = layer_reprs_by_source[source_id][layer_idx]
+                        n_components = min(layer_repr.shape[0], layer_repr.shape[1], 50)
+                        
+                        pca_layer = PCA(n_components=n_components)
+                        pca_layer.fit(layer_repr)
+                        
+                        cumsum_var = np.cumsum(pca_layer.explained_variance_ratio_)
+                        k_values = np.arange(1, len(cumsum_var) + 1)
+                        
+                        if source_id < len(real_sources):
+                            color = real_colors[source_id % len(real_colors)]
+                        else:
+                            color = synthetic_colors[(source_id - len(real_sources)) % len(synthetic_colors)]
+                        
+                        fig_plotly.add_trace(
+                            go.Scatter(
+                                x=k_values,
+                                y=cumsum_var,
+                                mode="lines+markers",
+                                name=source_name,
+                                line=dict(color=color, width=2),
+                                marker=dict(size=4),
+                                showlegend=(layer_idx == 0),  # Only show legend for first layer
+                            ),
+                            row=row,
+                            col=col,
+                        )
+                        
+                        layer_variance_data[layer_id][source_name] = {
+                            "cumsum_variance": cumsum_var,
+                            "k_values": k_values,
+                            "explained_variance_ratio": pca_layer.explained_variance_ratio_,
+                        }
+                    
+                    # Set axis labels
+                    fig_plotly.update_xaxes(title_text="Number of Components (k)", row=row, col=col)
+                    fig_plotly.update_yaxes(title_text="Cumulative Variance Explained", row=row, col=col, range=[0, 1.05])
+                
+                fig_plotly.update_layout(
+                    title_text="Layer-wise Variance Explained vs Number of Principal Components",
+                    height=300 * n_rows,
+                    showlegend=True,
+                    legend=dict(x=1.02, y=1),
+                    hovermode="x unified",
+                )
+                
+                out_var_html = out_dir / f"layer_variance_explained_{exp_name}.html"
+                fig_plotly.write_html(str(out_var_html), include_plotlyjs="cdn")
+                log(DEBUG, f"Saved interactive layer variance explained HTML to {out_var_html}")
+            
+            else:
+                # Plotly not available; saved per-layer variance arrays already
+                log(DEBUG, "Plotly not available for layer variance plotting; saved raw arrays only")
+            
+            # Save variance data
+            out_var_npz = out_dir / f"layer_variance_explained_{exp_name}.npz"
+            np.savez(str(out_var_npz), **{
+                f"layer_{lid}_{src_name}_{key}": val
+                for lid, layer_dict in layer_variance_data.items()
+                for src_name, src_dict in layer_dict.items()
+                for key, val in src_dict.items()
+            })
+            log(DEBUG, f"Saved layer variance explained data to {out_var_npz}")
+            
+    except Exception as e:
+        log(DEBUG, f"Could not compute per-layer variance analysis: {e}")
     
-
 
 
 def main():
@@ -816,6 +1214,27 @@ def main():
         action="store_true",
         help="Randomly reinitialize model weights and ignore MODEL_CONFIGS.WEIGHT_PATH",
     )
+    parser.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Only run discriminator×generator evaluations and exit (skip feature extraction/plots).",
+    )
+    parser.add_argument(
+        "--save-class-grids",
+        action="store_true",
+        help="Save per-class image grids for real and generated datasets.",
+    )
+    parser.add_argument(
+        "--grid-samples-per-class",
+        type=int,
+        default=10,
+        help="Number of samples per class in each grid (default: 10).",
+    )
+    parser.add_argument(
+        "--skip-dis-gen-eval",
+        action="store_true",
+        help="Skip discriminator vs generator accuracy/loss evaluations.",
+    )
     args = parser.parse_args()
 
     user_configs = parse_configs(args.config_file)
@@ -841,6 +1260,9 @@ def main():
     log(DEBUG, f"Random Reinit   : {args.random_reinit}")
     log(DEBUG, f"Run Results Dir : {args.run_results_path if args.run_results_path is not None else user_configs['OUTPUT_CONFIGS']['RESULT_LOG_PATH']}")
     log(DEBUG, f"Max Samples/Src : {args.max_samples_per_source}")
+    log(DEBUG, f"Save Grids      : {args.save_class_grids}")
+    log(DEBUG, f"Grid Samples    : {args.grid_samples_per_class}")
+    log(DEBUG, f"Dis/Gen Eval    : {not args.skip_dis_gen_eval}")
 
     tSNE(
         exp_name=exp_name,
@@ -849,6 +1271,10 @@ def main():
         executor_type=args.executor_type,
         run_results_path=args.run_results_path,
         max_samples_per_source=args.max_samples_per_source,
+        eval_only=args.eval_only,
+        save_class_grids=args.save_class_grids,
+        grid_samples_per_class=args.grid_samples_per_class,
+        run_dis_gen_eval=not args.skip_dis_gen_eval,
     )
 
 if __name__ == "__main__":

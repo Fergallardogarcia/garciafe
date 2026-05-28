@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -A NAISS2025-22-1228 -p alvis
-#SBATCH -t 0-05:30:00
+#SBATCH -A NAISS2026-3-305 -p alvis
+#SBATCH -t 0-24:00:00
 #SBATCH --gpus-per-node=V100:2
 #SBATCH -N 1 --ntasks=1
 #SBATCH -J SAVE 
@@ -25,3 +25,4 @@ srun ./deploy.sh "$CONFIG_FILE"
 
 # NAISS2025-22-1228
 # Berzelius-2026-100
+# NAISS2026-3-305, NAISS2025-22-1228

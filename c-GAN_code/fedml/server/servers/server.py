@@ -42,27 +42,8 @@ class Server:
         self.set_initial_parameters(initial_parameters=initial_parameters)
         self._pre_attack_checkpoint_saved = False
         self._pre_attack_round = None
-        self._first_round = 1
-        try:
-            attack_round = int(
-                self.user_configs["EXPERIMENT_CONFIGS"]["MAL_HYPER_PARAM"]["ATTACK_ROUND"]
-            )
-            if attack_round and user_configs["MODEL_CONFIGS"]["WEIGHT_PATH"] is None:
-                self._pre_attack_round = attack_round - 1
-                self._first_round = 1
-            elif attack_round:
-                self._first_round = attack_round
-            else:
-                log(
-                    WARNING,
-                    "ATTACK_ROUND=%s has no positive pre-attack round; checkpointing disabled",
-                    attack_round,
-                )
-        except Exception:
-            log(
-                WARNING,
-                "ATTACK_ROUND not found in config; pre-attack checkpointing disabled",
-            )
+        self._first_round = user_configs["SERVER_CONFIGS"].get("STARTING_ROUND", 1)
+        
         # self.max_workers: Optional[int] = None
         self.max_workers: Optional[int] = self.strategy.min_fit_clients * 2 + 1 # +1 for the extra attack GAN just in case 
 
@@ -90,12 +71,17 @@ class Server:
 
 
         #Create both filters
-        self.filter = create_filter(user_configs=user_configs, mode="DEFENSE", device=run_devices[0]) 
+        self.filter = create_filter(
+            user_configs=user_configs,
+            mode="DEFENSE", 
+            device=run_devices[0]) 
+        
         self.attack = create_filter(
             user_configs=user_configs,
             mode="ATTACK",
             device=run_devices[1],
         )
+
         self.attack.input_znoises = self.filter.input_znoises
         self.attack.input_classes = self.filter.input_classes
         
@@ -132,7 +118,7 @@ class Server:
 
         filter_ckpt_path = os.path.join(
             output_path,
-            f"weights-gen-def_{self.filter.gen_model.gen_type}-round-{server_round}.pt",
+            f"weights-gen-def-{self.filter.gen_model.gen_type}-round-{server_round}-{model_name}.pt",
         )
         filter_gen_model = getattr(self.filter, "gen_model", None)
         if filter_gen_model is not None:
@@ -293,7 +279,7 @@ class Server:
                 if ta is not None and tb is not None and len(ta) == len(tb):
                     datasets_match = all(torch.equal(a, b) for a, b in zip(ta, tb))
                     any_diff = any((a-b).abs().max() > 1e-5 for a, b in zip(ta, tb))
-                log(INFO, "Synthetic datasets identical: %s", datasets_match)
+                log(INFO, "Synthetic datasets identical: %s", any_diff)
             except Exception:
                 log(INFO, "Synthetic datasets identical: %s", False)
             #-------------------------------------------------
@@ -317,7 +303,9 @@ class Server:
         log(
             INFO,
             "Evaluating MAL clients across stages"
-            )    
+            )
+
+        stage_metrics = {}
         for client_id, res in mal_results:
             for stage, params in res.param_array.items():
                 res_global = self.strategy.evaluate(server_round, parameters=params)
@@ -327,23 +315,38 @@ class Server:
                 res_gen = (float("nan"), {})
                 if res_global is not None:
                     loss_global, metrics_global = res_global
-                    
+
                 if gen_eval_fn is not None:
                         res_gen = gen_eval_fn(server_round, weights=params, config= {})
+
+                dist_perturb =res.metrics.get("dist_perturb", float("nan"))
+                dist_corr = res.metrics.get("dist_corr", float("nan"))
 
                 loss_gen, metrics_gen = res_gen
                 loss_combined= [loss_global, loss_gen]
                 metrics_combined= [metrics_global, metrics_gen]
                 log(
                     INFO,
-                    "ID: %s, stage: %s , Global/GEN loss: %s, metrics: %s",
+                    "ID: %s, stage: %s , Global/GEN loss: %s, metrics: %s distances: %s, %s",
                     client_id,
                     stage,
                     loss_combined,
                     metrics_combined,
+                    dist_perturb,
+                    dist_corr
                 )
 
-            
+                client_key = f"client_{client_id}"
+                if client_key not in stage_metrics:
+                    stage_metrics[client_key] = {}
+                for eval_name, (eval_loss, eval_mets) in {"global": (loss_global, metrics_global), "gen": (loss_gen, metrics_gen)}.items():
+                    for k, v in {"loss": eval_loss, **eval_mets}.items():
+                        stage_metrics[client_key][f"{stage}_{eval_name}_{k}"] = v
+
+        if stage_metrics:
+            metrics_filter["stage_metrics"] = stage_metrics
+
+
 
         # self.eval_gen_attack_round, self.log_gen_attack_stats
 
@@ -448,7 +451,7 @@ class Server:
                 history.add_metrics_distributed_fit(server_round=current_round, metrics=fit_metrics)
                 if self.experiment_manager is not None: self.experiment_manager.log(fit_metrics, nested=True)
 
-            self._save_pre_attack_checkpoints(current_round)
+            
 
             # Evaluate model using strategy implementation
             res_cen = self.strategy.evaluate(current_round, parameters=self.parameters)

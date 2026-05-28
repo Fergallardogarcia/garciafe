@@ -41,6 +41,7 @@ class Status:
 @dataclass
 class GanAttackFitPayload:
     """Additional fit payload for GAN attack clients."""
+    perturbation_sign: Optional[Parameters] = None
     perturbation_direction: Optional[Parameters] = None
     perturbation_magnitude: Optional[float] = None
 

@@ -138,7 +138,10 @@ def single_node_simulation(exp_name, user_configs, executor_type, num_gpus=None)
         DEBUG, 
         "Saving final model parameters ..."
     )
-    torch.save(obj=fedml_server.parameters, f=user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"] + f"weights-{exp_name}.pt")
+    model_configs = user_configs["MODEL_CONFIGS"]
+    torch.save(
+        obj=fedml_server.parameters, 
+        f=user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"] + f"weights-{exp_name}-{model_configs['MODEL_NAME']}.pt")
 
     log(
         DEBUG, 
@@ -153,32 +156,39 @@ def single_node_simulation(exp_name, user_configs, executor_type, num_gpus=None)
     )
     
     if save_gen_models:
-        model_configs = user_configs["MODEL_CONFIGS"]
+        
+
         if (user_configs["SERVER_CONFIGS"]["SERVER_TYPE"]== "FILTER" and user_configs["SERVER_CONFIGS"]["FILTER_CONFIGS"]["FILTER_TYPE"]== "GAN-FILTERING"):
             filter = fedml_server.filter
-            gen_params=filter.gen_model.get_weights()
-            torch.save(
-                obj=gen_params,
-                f=os.path.join(
-                    user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"],
-                    f"gen-{exp_name}-{filter.gen_model.gen_type}-{model_configs['MODEL_NAME']}.pt",
-                ),
-            )
+            hyperparameters= {
+                "user_configs": user_configs,
+                "type": "defense",
+                "architecture": filter.gen_model.gen_type,
+                "round": user_configs["SERVER_CONFIGS"]["NUM_TRAIN_ROUND"],
+                                }
+            exp_manager_gen = ExperimentManager(experiment_id=exp_name, hyperparameters=hyperparameters)
+            exp_manager_gen.parameters = filter.gen_model.get_weights()
+            exp_manager_gen.save_to_disc(
+                user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"], 
+                f"gen-{exp_name}-{filter.gen_model.gen_type}-{model_configs['MODEL_NAME']}.pt"
+                    )
+            
 
         if user_configs["EXPERIMENT_CONFIGS"]["MAL_CLIENT_TYPE"] == "GAN_ATTACK":
             filter = fedml_server.attack
             gen_params=filter.gen_model.get_weights()
-            
-            torch.save(
-                obj=gen_params,
-                f=os.path.join(
-                    user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"],
-                    f"gen-attck-{exp_name}-{filter.gen_model.gen_type}-{model_configs['MODEL_NAME']}.pt",
-                ),
-            )
-
-    
-    
+            hyperparameters= {
+            "user_configs": user_configs,
+            "type": "defense",
+            "architecture": filter.gen_model.gen_type,
+            "round": user_configs["SERVER_CONFIGS"]["NUM_TRAIN_ROUND"],
+                          }
+            exp_manager_gen = ExperimentManager(experiment_id=exp_name, hyperparameters=hyperparameters)
+            exp_manager_gen.parameters = filter.gen_model.get_weights()
+            exp_manager_gen.save_to_disc(
+                user_configs["OUTPUT_CONFIGS"]["RESULT_LOG_PATH"], 
+                f"gen-att-{exp_name}-{filter.gen_model.gen_type}-{model_configs['MODEL_NAME']}.pt"
+                )
 
 
 

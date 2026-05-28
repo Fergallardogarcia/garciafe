@@ -134,7 +134,7 @@ def train_generator(
     # create learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer=gen_optim, step_size=(iterations//2), gamma=0.1)
     gen_model.train()
-    dis_model.train()
+    dis_model.eval()
 
     print("\n"+"+"*50+"\n| Training Generator Model\n"+"+"*50, flush=True)
     for i in range(iterations):
@@ -174,7 +174,7 @@ def train_generator2(
         latent_size,
         num_classes,
         device,
-        minibatch_diversity_weight: float = 0.1,
+        minibatch_discrimination_weight: float = 0.2,
     ) -> nn.Module:
     """Train the generator."""
     """Helper function to train the model.
@@ -189,13 +189,24 @@ def train_generator2(
     :param device: The device to train the model on i.e. cpu or cuda. 
     :returns: The trained generator model is returned back.
     """
-
+    if minibatch_discrimination_weight <= 0.0:
+        return train_generator(
+            gen_model=gen_model,
+            dis_model=dis_model,
+            gen_optim=gen_optim,
+            criterion=criterion,
+            batch_size=batch_size,
+            iterations=iterations,
+            latent_size=latent_size,
+            num_classes=num_classes,
+            device=device,
+        )
+    
     if next(gen_model.parameters()).device != device:
         gen_model.to(device)
 
     if next(dis_model.parameters()).device != device:
         dis_model.to(device)
-
     # start evaluation of the model
     # gen_loss = []
 
@@ -206,7 +217,7 @@ def train_generator2(
         gamma=0.1,
     )
     gen_model.train()
-    dis_model.train()
+    dis_model.eval()
 
     dis_requires_grad = [p.requires_grad for p in dis_model.parameters()]
     for p in dis_model.parameters():
@@ -232,7 +243,7 @@ def train_generator2(
 
             # Combine class objective with minibatch discrimination objective.
             cls_loss = criterion(dis_predict, input_l).to(device)
-            g_loss = cls_loss + (minibatch_diversity_weight * mbd_loss)
+            g_loss = cls_loss + (minibatch_discrimination_weight * mbd_loss)
             g_loss.backward()
             gen_optim.step()
 

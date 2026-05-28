@@ -26,7 +26,7 @@ DATASET_CONFIGS:
   DATASET_PATH: /mimer/NOBACKUP/Datasets/CIFAR
   DIRICHLET_ALPHA: 100.0
   MIN_PARTITION_SIZE: 0
-  RANDOM_SEED: 333
+  RANDOM_SEED: 332
   SPLIT: true
   SPLIT_METHOD: DIRICHLET-BY-CLASS
 EXPERIMENT_CONFIGS:
@@ -64,8 +64,14 @@ EXPERIMENT_CONFIGS:
           TRAIN: true
           WEIGHT_PATH: ./temp/weights/gen_weights
         SYNTHETIC_DATA_SIZE: trainset_size
-        DISCRIMINATOR_TRAINING_MODE: sequential # [pcgrad or sequential]
-        SYNTHETIC_STRENGTH_RATIO: 0
+        DISCRIMINATOR_TRAINING_MODE: other # [pcgrad or sequential, other]
+        CORRECTION_CONFIG:
+          CORRECTION: true #[true, false] whether to correct the perturbation or not
+          CONSTRAINED_MODE: perpendicular # [perpendicular, mask, none]
+        SYNTHETIC_STRENGTH_RATIO: 0.05
+        KD_CONFIG:
+          TEMPERATURE: 8.0
+          ALPHA: 0.1
         TRAIN_GAN_PARAMS:
           BATCH_SIZE: 128
           CRITERION: CROSSENTROPY
@@ -73,6 +79,7 @@ EXPERIMENT_CONFIGS:
           ITERATION: 10000
           LEARN_RATE: 1.0e-05
           OPTIMIZER: ADAM
+          MINIBATCH_DISCRIMINATION: 0.2
     LABELFLIP_CONFIG:
       FLIP_VERSION: v1
       LEARN_RATE: 0.01
@@ -101,19 +108,20 @@ EXPERIMENT_CONFIGS:
         TARGET_LABEL: 0
     RANDOM_CONFIG:
       LOCATION: 0
-      NORM_SCALE: 5.0
+      NORM_SCALE: 10.0
       SCALE: 1.0
       TYPE: UNIFORM-2
     SIGNFLIP_CONFIG:
-      SCALE_FACTOR: 5.0
+      SCALE_FACTOR: 10.0
   MAL_SHARED_DATA: false
 MODEL_CONFIGS:
   MODEL_NAME: RESNET-18-CUSTOM
   NUM_CLASSES: 10
-  WEIGHT_PATH: null
+  WEIGHT_PATH: ../model_weights/weights-global-RESNET-18-CUSTOM-round-24_TEST-TANH.pt
 OUTPUT_CONFIGS:
   RESULT_LOG_PATH: ../temp/CIFAR10/run_results/
 SERVER_CONFIGS:
+  STARTING_ROUND: 1
   AGGREGATE_STRAT: FED-AVERAGE
   AGGR_STRAT_ARGS: null
   CLIENTS_MANAGER: SIMPLE
@@ -136,7 +144,7 @@ SERVER_CONFIGS:
         - 0.85
         BASELINE_OVERALL_MIN_ACC: 0.8
         CLUSTER_BYCLASS_THRESHOLD: 0.5
-        FILTERATION_TYPE: MIXED-ACCURACY
+        FILTERATION_TYPE: MIXED-LOSS
         NORM_LIMIT: 40.0
         SAMPLES_PER_CLASS: 1000
       GEN_ARGS:
@@ -145,9 +153,9 @@ SERVER_CONFIGS:
         NUM_CLASSES: 10
         OUTPUT_SIZE: 32
         OUT_CHANNEL: 3
-        SET_WEIGHTS: false
+        SET_WEIGHTS: true
         TRAIN: true
-        WEIGHT_PATH: ./temp/weights/gen_weights
+        WEIGHT_PATH:  ../model_weights/weights-gen-def_TEST-TANH-round-24.pt
       SKIP_ROUNDS: 20
       TRAIN_GAN_PARAMS:
         BATCH_SIZE: 128
@@ -160,7 +168,7 @@ SERVER_CONFIGS:
   MIN_NUM_CLIENTS: 100
   MIN_TRAINING_SAMPLE_SIZE: 10
   NUM_TRAIN_ROUND: 55
-  RANDOM_SEED: 333
+  RANDOM_SEED: 128
   RUN_DEVICE: auto
   SERVER_TYPE: FILTER
   TRAINING_SAMPLE_FRACTION: 0.1
