@@ -68,7 +68,7 @@ EXPERIMENT_CONFIGS:
         SYNTHETIC_STRENGTH_RATIO: 0.03
         KD_CONFIG:
           TEMPERATURE: 7.0
-          ALPHA: 0.8
+          ALPHA: 0.1
         DISCRIMINATOR_TRAINING_MODE: other # [pcgrad or sequential, other]
         CORRECTION_CONFIG:
           CORRECTION: true #[true, false] whether to correct the perturbation or not

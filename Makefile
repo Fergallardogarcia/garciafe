@@ -28,11 +28,13 @@ plot_container := /cephyr/users/garciafe/containers/fl_env_v5.sif
 plot_script := scripts/plot_gen_corr_pert_ratio_log.py
 plot_run_results ?= /cephyr/users/garciafe/temp/CIFAR10/run_results
 plot_output ?= $(plot_run_results)/filter_gen_corr_pert_ratio_trends_minibatch_axes_no_discrim_log.png
+plot_quantile ?= 0.5
 
 architecture:
 	apptainer exec $(plot_container) python3 $(plot_script) \
 		--run-results-path $(plot_run_results) \
-		--output $(plot_output)
+		--output $(plot_output) \
+		--quantile $(plot_quantile)
 
 queue:
 	squeue -u $$USER

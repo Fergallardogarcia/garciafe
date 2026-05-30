@@ -134,7 +134,7 @@ def train_generator(
     # create learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer=gen_optim, step_size=(iterations//2), gamma=0.1)
     gen_model.train()
-    dis_model.eval()
+    dis_model.train()
 
     print("\n"+"+"*50+"\n| Training Generator Model\n"+"+"*50, flush=True)
     for i in range(iterations):
@@ -217,7 +217,7 @@ def train_generator2(
         gamma=0.1,
     )
     gen_model.train()
-    dis_model.eval()
+    dis_model.train()
 
     dis_requires_grad = [p.requires_grad for p in dis_model.parameters()]
     for p in dis_model.parameters():

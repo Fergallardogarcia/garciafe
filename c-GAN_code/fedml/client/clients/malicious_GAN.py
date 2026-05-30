@@ -417,11 +417,11 @@ def perturbation_plus_correction(
         model.train()
         gen_model.eval()
 
-        adam_optimizer = get_optimizer(
-            optimizer_str="ADAMW",
+        adam_optimizer = get_optimizer( # for constrained opt, used no weight decay. For others unconstrained, using it
+            optimizer_str="ADAM",
             local_model=model,
             learning_rate=1e-3,
-            weight_decay=0.0,
+            # weight_decay=1e-4,
         )
         for epoch in range(epochs):
             for data in trainloader:
@@ -449,9 +449,42 @@ def perturbation_plus_correction(
                     kd_temperature=kd_temperature,
                 )
 
+                def _project_gradients_perpendicular_to_direction() -> None:
+                    grad_tensors = []
+                    param_tensors = []
+                    for param in model.parameters():
+                        if not param.requires_grad:
+                            continue
+                        param_tensors.append(param)
+                        grad_tensors.append(
+                            param.grad if param.grad is not None else torch.zeros_like(param)
+                        )
+
+                    if not grad_tensors:
+                        return
+
+                    grad_vector = torch.nn.utils.parameters_to_vector(grad_tensors)
+                    direction_vector = correction_direction.to(
+                        grad_vector.device,
+                        dtype=grad_vector.dtype,
+                    )
+                    direction_norm_sq = torch.dot(direction_vector, direction_vector).clamp_min(1e-12)
+                    parallel_component = torch.dot(grad_vector, direction_vector) / direction_norm_sq
+                    projected_vector = grad_vector - parallel_component * direction_vector
+
+                    offset = 0
+                    for param in param_tensors:
+                        param_size = param.numel()
+                        projected_slice = projected_vector[offset:offset + param_size].view_as(param)
+                        if param.grad is None:
+                            param.grad = projected_slice.clone()
+                        else:
+                            param.grad.copy_(projected_slice)
+                        offset += param_size
+
                 total_loss.backward()
                 # Constrained optimization:---------------------------------
-                # _project_gradients_perpendicular_to_direction() 
+                _project_gradients_perpendicular_to_direction() 
                 #--------------------------------------------------------------
                 # optimizer.step()
                 adam_optimizer.step()
@@ -483,17 +516,22 @@ def perturbation_plus_correction(
                     projected_update = update - torch.dot(update, direction) / direction.dot(direction).clamp_min(1e-12) * direction
                     model.set_weights(pre_weights + projected_update)
                     # -------------------------------
-                constrained_mode = correction_config.get("CONSTRAINED_MODE", "perpendicular")
+                constrained_mode = correction_config.get("CONSTRAINED_MODE", "none")
+                # Log and expose constrained mode for debugging/inspection
+                log(INFO, "GAN correction constrained_mode: %s", constrained_mode)
+                if fitres is not None:
+                    try:
+                        fitres.metrics["constrained_mode"] = constrained_mode
+                    except Exception:
+                        # best-effort; don't break training if metrics dict is unexpected
+                        pass
                 if constrained_mode == "mask":
                     _mask(pre_weights, attack_payload.perturbation_sign)
-                    if honest_update_sign is not None:
-                        _mask(pre_weights, honest_update_sign)
                 elif constrained_mode == "perpendicular":
                     _project_perpendicular(pre_weights, correction_direction)
-                    if honest_update_direction is not None:
-                        _project_perpendicular(pre_weights, honest_update_direction)
+                   
 
-        model.eval()
+        # model.eval()
 
         fitres.param_array["correction"] = model.get_weights()
     else:

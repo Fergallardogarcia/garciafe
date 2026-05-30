@@ -34,7 +34,7 @@ EXPERIMENT_CONFIGS:
   MAL_CLIENT_TYPE: GAN_ATTACK
   MAL_HYPER_PARAM:
     ATTACK_RATIO: 1.0
-    ATTACK_ROUND: 30
+    ATTACK_ROUND: 25
     BACKDOOR_CONFIG:
       BACK_VERSION: v1
       LEARN_RATE: 0.01
@@ -54,10 +54,10 @@ EXPERIMENT_CONFIGS:
           TARGET_LABEL: 2
     GAN_ATTACK_CONFIG:
       HYPER_PARAM:
-        TEST: false
+        TEST: true
         GEN_ARGS:
           LATENT_SIZE: 100
-          MODEL_NAME: GEN-DCGAN
+          MODEL_NAME: TEST-SIGMOID
           NUM_CLASSES: 10
           OUTPUT_SIZE: 32
           OUT_CHANNEL: 3
@@ -68,11 +68,11 @@ EXPERIMENT_CONFIGS:
         SYNTHETIC_STRENGTH_RATIO: 0.03
         KD_CONFIG:
           TEMPERATURE: 7.0
-          ALPHA: 0.1
+          ALPHA: 0.0
         DISCRIMINATOR_TRAINING_MODE: other # [pcgrad or sequential, other]
         CORRECTION_CONFIG:
           CORRECTION: true #[true, false] whether to correct the perturbation or not
-          CONSTRAINED_MODE: mask # [perpendicular, mask, none]
+          CONSTRAINED_MODE: none # [perpendicular, mask, none]
         TRAIN_GAN_PARAMS:
           BATCH_SIZE: 128
           CRITERION: CROSSENTROPY
@@ -80,7 +80,7 @@ EXPERIMENT_CONFIGS:
           ITERATION: 10000
           LEARN_RATE: 1.0e-05
           OPTIMIZER: ADAM
-          MINIBATCH_DISCRIMINATION: 0.2
+          MINIBATCH_DISCRIMINATION: 0
     LABELFLIP_CONFIG:
       FLIP_VERSION: v1
       LEARN_RATE: 0.01
@@ -109,7 +109,7 @@ EXPERIMENT_CONFIGS:
         TARGET_LABEL: 0
     RANDOM_CONFIG:
       LOCATION: 0
-      NORM_SCALE: 6.0 
+      NORM_SCALE: 6.0
       SCALE: 1.0
       TYPE: UNIFORM-2
     SIGNFLIP_CONFIG:
@@ -118,11 +118,11 @@ EXPERIMENT_CONFIGS:
 MODEL_CONFIGS:
   MODEL_NAME: RESNET-18-CUSTOM
   NUM_CLASSES: 10
-  WEIGHT_PATH: ../model_weights/weights-global-PCGRAD_TEST_TANH-RESNET-18-CUSTOM.pt
+  WEIGHT_PATH: ../model_weights/weights-global-RESNET-18-CUSTOM-round-24_GEN-DCGAN.pt
 OUTPUT_CONFIGS:
   RESULT_LOG_PATH: ../temp/CIFAR10/run_results/
 SERVER_CONFIGS:
-  STARTING_ROUND: 55
+  STARTING_ROUND: 25
   AGGREGATE_STRAT: FED-AVERAGE
   AGGR_STRAT_ARGS: null
   CLIENTS_MANAGER: SIMPLE
@@ -150,13 +150,13 @@ SERVER_CONFIGS:
         SAMPLES_PER_CLASS: 1000
       GEN_ARGS:
         LATENT_SIZE: 100
-        MODEL_NAME: TEST-TANH 
+        MODEL_NAME: GEN-DCGAN
         NUM_CLASSES: 10
         OUTPUT_SIZE: 32
         OUT_CHANNEL: 3
         SET_WEIGHTS: true
         TRAIN: true
-        WEIGHT_PATH:  ../model_weights/gen-def-weights-PCGRAD_TEST2def_TEST-TANH.pt 
+        WEIGHT_PATH: ../model_weights/weights-gen-def_GEN-DCGAN-round-24.pt
       SKIP_ROUNDS: 20
       TRAIN_GAN_PARAMS:
         BATCH_SIZE: 128
