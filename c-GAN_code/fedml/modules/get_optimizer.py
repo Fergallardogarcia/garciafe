@@ -24,7 +24,7 @@ def get_optimizer(
     if optimizer_str == "SGD":
         return SGD(local_model.parameters(), lr=learning_rate, **kwargs)
     elif optimizer_str == "ADAM":
-        return Adam(local_model.parameters(), lr=learning_rate)
+        return Adam(local_model.parameters(), lr=learning_rate, **kwargs)
     elif optimizer_str == "ADAMW":
         return AdamW(local_model.parameters(), lr=learning_rate, **kwargs)
     else:

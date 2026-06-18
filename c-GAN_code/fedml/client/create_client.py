@@ -39,6 +39,15 @@ def create_client(
             process=process,
             attack_config = configs["MAL_HYPER_PARAM"],
         )
+    elif client_type == "PERMUTER":
+        from .clients.malicious_permuter import PermuterClient
+        return PermuterClient(
+            client_id=client_id,
+            trainset=trainset,
+            testset=testset,
+            process=process,
+            attack_config = configs["MAL_HYPER_PARAM"],
+        )
     elif client_type == "LABELFLIP":
         from .clients.malicious_labelflip import LabelFlippingClient
         return LabelFlippingClient(

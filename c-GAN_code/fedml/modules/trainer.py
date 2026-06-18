@@ -25,25 +25,43 @@ def _extract_discriminator_embedding(dis_model: nn.Module, images: torch.Tensor)
 
 
 def _same_class_minibatch_discrimination_loss(
-        embeddings: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> torch.Tensor:
-    """Penalize feature collapse among generated samples from the same class."""
-    class_losses = []
-    for class_id in torch.unique(labels):
-        class_mask = labels == class_id
-        class_emb = embeddings[class_mask]
-        if class_emb.size(0) < 2:
-            continue
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+) -> torch.Tensor:
+    # Compute all pairwise distances at once
+    pairwise_dist = torch.cdist(embeddings, embeddings, p=2)
+    pairwise_sim  = torch.exp(-pairwise_dist)
 
-        pairwise_dist = torch.cdist(class_emb, class_emb, p=2)
-        pairwise_sim = torch.exp(-pairwise_dist)
-        non_diag_mask = ~torch.eye(class_emb.size(0), dtype=torch.bool, device=class_emb.device)
-        class_losses.append(pairwise_sim[non_diag_mask].mean())
+    # Mask: same class, different sample
+    label_match = labels.unsqueeze(0) == labels.unsqueeze(1)  # (N, N)
+    non_diag    = ~torch.eye(len(labels), dtype=torch.bool, device=embeddings.device)
+    mask        = label_match & non_diag
 
-    if not class_losses:
+    if mask.sum() == 0:
         return embeddings.new_tensor(0.0)
-    return torch.stack(class_losses).mean()
+
+    return pairwise_sim[mask].mean()
+
+# def _same_class_minibatch_discrimination_loss(
+#         embeddings: torch.Tensor,
+#         labels: torch.Tensor,
+#     ) -> torch.Tensor:
+#     """Penalize feature collapse among generated samples from the same class."""
+#     class_losses = []
+#     for class_id in torch.unique(labels):
+#         class_mask = labels == class_id
+#         class_emb = embeddings[class_mask]
+#         if class_emb.size(0) < 2:
+#             continue
+
+#         pairwise_dist = torch.cdist(class_emb, class_emb, p=2)
+#         pairwise_sim = torch.exp(-pairwise_dist)
+#         non_diag_mask = ~torch.eye(class_emb.size(0), dtype=torch.bool, device=class_emb.device)
+#         class_losses.append(pairwise_sim[non_diag_mask].mean())
+
+#     if not class_losses:
+#         return embeddings.new_tensor(0.0)
+#     return torch.stack(class_losses).mean()
 
 def train(
         model: nn.Module,

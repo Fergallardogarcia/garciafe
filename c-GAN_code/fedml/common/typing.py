@@ -44,6 +44,9 @@ class GanAttackFitPayload:
     perturbation_sign: Optional[Parameters] = None
     perturbation_direction: Optional[Parameters] = None
     perturbation_magnitude: Optional[float] = None
+    # Attacker-generator loss of the honest-trained model (teacher = global model); used as the
+    # reference when tuning the perturbation magnitude during correction.
+    honest_loss: Optional[float] = None
 
 
 @dataclass

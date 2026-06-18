@@ -66,8 +66,8 @@ EXPERIMENT_CONFIGS:
         SYNTHETIC_DATA_SIZE: trainset_size
         SYNTHETIC_STRENGTH_RATIO: 0.03
         KD_CONFIG:
-          TEMPERATURE: 8.0
-          ALPHA: 0.0
+          TEMPERATURE: 7.0
+          ALPHA: 0.7
         DISCRIMINATOR_TRAINING_MODE: other # [pcgrad or sequential, other]
         CORRECTION_CONFIG:
           CORRECTION: true #[true, false] whether to correct the perturbation or not
@@ -79,7 +79,7 @@ EXPERIMENT_CONFIGS:
           ITERATION: 10000
           LEARN_RATE: 1.0e-05
           OPTIMIZER: ADAM
-          MINIBATCH_DISCRIMINATION: 0
+          MINIBATCH_DISCRIMINATION: 0.2
     LABELFLIP_CONFIG:
       FLIP_VERSION: v1
       LEARN_RATE: 0.01

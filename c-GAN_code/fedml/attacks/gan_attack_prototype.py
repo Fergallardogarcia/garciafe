@@ -273,7 +273,8 @@ class GAN_attack(Filter):
         gen_optimizer = get_optimizer(
             optimizer_str=self.train_configs["OPTIMIZER"], 
             local_model=self.gen_model, 
-            learning_rate=self.train_configs["LEARN_RATE"]
+            learning_rate=self.train_configs["LEARN_RATE"],
+            betas=(0.0, 0.9) if self.train_configs["OPTIMIZER"] == "ADAM" else None,
         )
 
         

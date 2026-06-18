@@ -7,3 +7,4 @@ from: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-devel
 	python -m pip install flwr
 	python -m pip install wandb
 	python -m pip install plotly
+	python -m pip install matplotlib

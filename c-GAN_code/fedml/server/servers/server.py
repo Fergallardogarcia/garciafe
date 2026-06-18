@@ -82,8 +82,13 @@ class Server:
             device=run_devices[1],
         )
 
-        self.attack.input_znoises = self.filter.input_znoises
-        self.attack.input_classes = self.filter.input_classes
+        # Only GAN-based attacks expose a server-side co-trained generator that
+        # needs the filter's shared latent noise / class inputs. Non-GAN attacks
+        # (e.g. PERMUTER, SIGNFLIP, RANDOM) have no server-side component, so
+        # create_filter(mode="ATTACK") returns None for them -- skip the wiring.
+        if self.attack is not None:
+            self.attack.input_znoises = self.filter.input_znoises
+            self.attack.input_classes = self.filter.input_classes
         
 
     
@@ -306,6 +311,10 @@ class Server:
             )
 
         stage_metrics = {}
+        # Per param_array stage metrics for each malicious client, keyed by client_id. Each
+        # client maps to {"param_array_metrics": {stage: {global/gen metrics, "dist", "norm"}}};
+        # which dist/norm a value refers to is inferred from the stage name.
+        filter_defense_metrics = {}
         for client_id, res in mal_results:
             for stage, params in res.param_array.items():
                 res_global = self.strategy.evaluate(server_round, parameters=params)
@@ -319,29 +328,50 @@ class Server:
                 if gen_eval_fn is not None:
                         res_gen = gen_eval_fn(server_round, weights=params, config= {})
 
-                dist_perturb =res.metrics.get("dist_perturb", float("nan"))
-                dist_corr = res.metrics.get("dist_corr", float("nan"))
+                distance_norms = {
+                    "norm_scale": res.metrics.get("norm_scale", float("nan")),
+                    "dist_perturb": res.metrics.get("dist_perturb", float("nan")),
+                    "dist_corr": res.metrics.get("dist_corr", float("nan")),
+                    "norm_pre": res.metrics.get("norm_pre", float("nan")),
+                    "norm_perturb": res.metrics.get("norm_perturb", float("nan")),
+                    "norm_corr": res.metrics.get("norm_corr", float("nan")),
+                }
 
                 loss_gen, metrics_gen = res_gen
                 loss_combined= [loss_global, loss_gen]
                 metrics_combined= [metrics_global, metrics_gen]
                 log(
                     INFO,
-                    "ID: %s, stage: %s , Global/GEN loss: %s, metrics: %s distances: %s, %s",
+                    "ID: %s, stage: %s, Global/GEN loss: %s, metrics: %s, distances_norms: %s",
                     client_id,
                     stage,
                     loss_combined,
                     metrics_combined,
-                    dist_perturb,
-                    dist_corr
+                    distance_norms,
                 )
 
                 client_key = f"client_{client_id}"
                 if client_key not in stage_metrics:
                     stage_metrics[client_key] = {}
+                stage_entry = {}
                 for eval_name, (eval_loss, eval_mets) in {"global": (loss_global, metrics_global), "gen": (loss_gen, metrics_gen)}.items():
                     for k, v in {"loss": eval_loss, **eval_mets}.items():
+                        stage_entry[f"{eval_name}_{k}"] = v
                         stage_metrics[client_key][f"{stage}_{eval_name}_{k}"] = v
+
+                # Nested per-stage record: this stage's global/gen metrics plus its distance
+                # to the pre-perturbation weights and its L2 norm. dist for "pre" is 0 by
+                # definition; which dist/norm a value refers to is inferred from the stage name.
+                stage_dist_norm = {
+                    "pre":          {"dist": 0.0, "norm": res.metrics.get("norm_pre", float("nan"))},
+                    "perturbation": {"dist": res.metrics.get("dist_perturb", float("nan")), "norm": res.metrics.get("norm_perturb", float("nan"))},
+                    "correction":   {"dist": res.metrics.get("dist_corr", float("nan")), "norm": res.metrics.get("norm_corr", float("nan"))},
+                }.get(stage, {"dist": float("nan"), "norm": float("nan")})
+                client_entry = filter_defense_metrics.setdefault(client_id, {"param_array_metrics": {}})
+                # ``norm_scale`` (c) is per-client, not per-stage: record it once so the
+                # detection-rate table can be keyed/annotated by the norm scale used.
+                client_entry.setdefault("norm_scale", res.metrics.get("norm_scale", float("nan")))
+                client_entry["param_array_metrics"][stage] = {**stage_entry, **stage_dist_norm}
 
         if stage_metrics:
             metrics_filter["stage_metrics"] = stage_metrics
@@ -362,7 +392,7 @@ class Server:
         metrics_aggregated.update(metrics_filter)
         metrics_aggregated.update(metrics_attack)
 
-        return parameters_aggregated, metrics_aggregated, (results, failures)
+        return parameters_aggregated, metrics_aggregated, (results, failures), filter_defense_metrics
 
 
     def evaluate_round(self, server_round: int):
@@ -443,12 +473,20 @@ class Server:
             res_fit = self.fit_round(current_round)
 
             if res_fit is not None:
-                parameters_prime, fit_metrics, (results, failures) = res_fit
+                parameters_prime, fit_metrics, (results, failures), filter_defense_metrics = res_fit
                 if parameters_prime is not None:
                     self.parameters = parameters_prime
                 if fit_metrics is None:
                     fit_metrics = dict()
                 history.add_metrics_distributed_fit(server_round=current_round, metrics=fit_metrics)
+                # Store the filter (malicious) evaluation metrics for each malicious
+                # client's param_array stages into the defense-filter history.
+                for client_id, client_filter_metrics in filter_defense_metrics.items():
+                    history.add_metrics_filter(
+                        server_round=current_round,
+                        metrics=client_filter_metrics,
+                        client_id=client_id,
+                    )
                 if self.experiment_manager is not None: self.experiment_manager.log(fit_metrics, nested=True)
 
             

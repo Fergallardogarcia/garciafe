@@ -149,7 +149,7 @@ def single_node_simulation(exp_name, user_configs, executor_type, num_gpus=None)
     )
     
     # Save final models/ datasets
-    save_gen_models= True
+    save_gen_models= False
     log(
         DEBUG, 
         f"Saving final def-gen_model parameters:{save_gen_models} "
