@@ -58,6 +58,46 @@ from .honest_client import HonestClient
 _PRODUCER_TYPES = (nn.Conv2d, nn.Linear)
 # Normalization layers that ride along with a producer's output channels.
 _NORM_TYPES = (nn.BatchNorm1d, nn.BatchNorm2d, nn.InstanceNorm1d, nn.InstanceNorm2d)
+# Normalization layers that grant a *scale* gauge freedom to the layer feeding
+# them: scaling that layer by any non-zero c is absorbed by the (re-centering,
+# re-scaling) norm, up to a sign that is compensated on the norm's affine gamma.
+_GAUGE_NORM_TYPES = (
+    nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d,
+    nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d,
+    nn.GroupNorm, nn.LayerNorm,
+)
+
+
+def parse_coordination(value):
+    """Normalize the ``PERMUTER_CONFIG.COORDINATION`` field to one of:
+
+        * ``None`` -- independent: every client draws a fresh permutation each
+          round (seed = base + round + client_id).
+        * ``int N`` (>=1) -- cyclic coordination: all clients share one
+          permutation, held fixed for N-round cycles and recomputed each cycle.
+        * ``"all"`` -- full coordination: one shared permutation for the whole run.
+
+    Accepts YAML quirks (``none`` parses as the string "none", not Python None)
+    and the legacy boolean field (``true`` -> "all", ``false`` -> None).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "all" if value else None
+    if isinstance(value, int):
+        return value if value >= 1 else None
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("none", "null", "", "false", "independent"):
+            return None
+        if v in ("all", "true", "full"):
+            return "all"
+        try:
+            n = int(v)
+            return n if n >= 1 else None
+        except ValueError:
+            return None
+    return None
 
 
 class PermuterClient(HonestClient):
@@ -97,6 +137,20 @@ class PermuterClient(HonestClient):
         self.scale_factor = perm_cfg.get("SCALE_FACTOR", 1.0)
         self.tolerance = perm_cfg.get("TOLERANCE", 1e-2)
         self.base_seed = perm_cfg.get("SEED", 0)
+        # COORDINATION: None -> independent per client/round; int N -> shared
+        # permutation held for N-round cycles; "all" -> one shared permutation for
+        # the whole run. For both coordinated modes the seed is broadcast by the
+        # server (gan_attack_prototype.broadcast_permutation_seed), so the client
+        # just consumes the payload seed; only None reseeds per client/round.
+        self.coordination = parse_coordination(perm_cfg.get("COORDINATION", None))
+        # ---- BatchNorm/LayerNorm *scale* gauge symmetry ----
+        # Layers feeding a normalization layer can be scaled by any non-zero c
+        # (the norm absorbs it). GAUGE_SCALE_NORM_LAYERS is the magnitude |c| to
+        # apply; GAUGE_SCALE_PROB is the per-layer APPLY probability (x ~ U[0,1];
+        # x < prob -> apply, else skip), so scaling is non-uniform across layers
+        # and clients. The sign of c is drawn +/- with fixed 0.5 probability.
+        self.gauge_scale = perm_cfg.get("GAUGE_SCALE_NORM_LAYERS", 6.0)
+        self.gauge_prob = perm_cfg.get("GAUGE_SCALE_PROB", 0.5)
 
     @property
     def client_type(self):
@@ -133,9 +187,28 @@ class PermuterClient(HonestClient):
 
         # Apply random, function-preserving permutations to as many layers as the
         # architecture safely allows.
+        if self.coordination is None:
+            # Independent attack: a fresh permutation per client and per round.
+            perm_seed = int(self.base_seed) + server_round * 100003 + int(self.client_id)
+        else:
+            # Coordinated attack ("all" or int N-round cycles): use the shared seed
+            # broadcast by the server, which already encodes the cycle logic, so all
+            # malicious clients compute the SAME permutation. Fall back to the base
+            # seed if no payload was attached.
+            payload = getattr(ins, "gan_attack_payload", None)
+            payload_seed = getattr(payload, "permutation_seed", None) if payload is not None else None
+            perm_seed = int(payload_seed) if payload_seed is not None else int(self.base_seed)
         generator = torch.Generator(device=device)
-        generator.manual_seed(int(self.base_seed) + server_round * 100003 + int(self.client_id))
+        generator.manual_seed(perm_seed)
         num_permuted = _apply_function_preserving_permutations(model, generator, device)
+
+        # Stack the BatchNorm/LayerNorm scale gauge on top of the permutation:
+        # randomly (per layer, per client) scale layers feeding a norm by
+        # +/-GAUGE_SCALE_NORM_LAYERS, which the norm absorbs -- another way to move
+        # the weights far in coordinate space while leaving the function intact.
+        num_gauged = _apply_gauge_scaling(
+            model, generator, self.gauge_scale, self.gauge_prob, device
+        )
 
         # Verify the function is genuinely unchanged before we submit anything.
         with torch.no_grad():
@@ -147,20 +220,21 @@ class PermuterClient(HonestClient):
         if was_training:
             model.train()
 
-        if num_permuted == 0 or rel_dev > self.tolerance:
-            # Could not safely permute this architecture or the check failed --
+        if (num_permuted + num_gauged) == 0 or rel_dev > self.tolerance:
+            # Could not safely transform this architecture or the check failed --
             # revert to the honest update untouched.
             log(
                 WARNING,
-                "[PermuterClient %s] permutation aborted (layers=%d, rel_dev=%.2e > tol=%.2e); "
+                "[PermuterClient %s] transform aborted (perm=%d, gauge=%d, rel_dev=%.2e > tol=%.2e); "
                 "submitting honest update.",
-                self.client_id, num_permuted, rel_dev, self.tolerance,
+                self.client_id, num_permuted, num_gauged, rel_dev, self.tolerance,
             )
             model.set_weights(honest_parameters, clone=True)
             del fit_results.parameters
             fit_results.parameters = honest_parameters
             fit_results.metrics["attacking"] = False
             fit_results.metrics["permuted_layers"] = 0
+            fit_results.metrics["gauge_scaled_layers"] = 0
             return fit_results
 
         # Read the re-based parameters back out and submit them.
@@ -173,12 +247,13 @@ class PermuterClient(HonestClient):
         fit_results.num_examples *= self.scale_factor
         fit_results.metrics["attacking"] = True
         fit_results.metrics["permuted_layers"] = num_permuted
+        fit_results.metrics["gauge_scaled_layers"] = num_gauged
 
         log(
             DEBUG,
-            "[PermuterClient %s] round %d: permuted %d layers "
+            "[PermuterClient %s] round %d: permuted %d layers, gauge-scaled %d layers "
             "(output unchanged, rel_dev=%.2e).",
-            self.client_id, server_round, num_permuted, rel_dev,
+            self.client_id, server_round, num_permuted, num_gauged, rel_dev,
         )
 
         return fit_results
@@ -196,6 +271,69 @@ class PermuterClient(HonestClient):
 # ---------------------------------------------------------------------------
 # Permutation helpers
 # ---------------------------------------------------------------------------
+
+def _collect_norm_scalable_layers(model):
+    """Return ``(layer, norm)`` pairs where ``layer`` (Conv/Linear) feeds directly
+    into a normalization ``norm`` -- i.e. the layers that carry a scale gauge.
+
+    A producer "feeds directly into" a norm when the norm is the very next leaf
+    module in forward order (Conv -> BN with nothing in between), which is the
+    only case where uniformly scaling the producer is exactly absorbed.
+    """
+    leaves = [m for m in model.modules() if len(list(m.children())) == 0]
+    pairs = []
+    for idx, module in enumerate(leaves):
+        if isinstance(module, _PRODUCER_TYPES):
+            if idx + 1 < len(leaves) and isinstance(leaves[idx + 1], _GAUGE_NORM_TYPES):
+                pairs.append((module, leaves[idx + 1]))
+    return pairs
+
+
+def _apply_gauge_scaling(model, generator, scale, prob, device) -> int:
+    """Apply the BatchNorm/LayerNorm *scale* gauge to a random subset of layers.
+
+    For each (layer -> norm) pair: draw x ~ U[0,1]; apply when ``x < prob``,
+    otherwise skip. When applied, scale the layer's weight/bias by
+    ``c = sign * |scale|`` (sign drawn
+    +/- at p=0.5). The norm absorbs ``|c|``; only the sign is compensated, by
+    flipping the norm's affine gamma. Running statistics (when tracked) are scaled
+    by ``c`` (mean) and ``c**2`` (var). Returns the number of layers scaled.
+
+    The transform is exactly function-preserving for affine norms; for a norm
+    without an affine weight there is no gamma to flip, so only positive scales
+    are used there.
+    """
+    if scale is None or float(scale) == 0.0:
+        return 0
+    magnitude = abs(float(scale))
+    pairs = _collect_norm_scalable_layers(model)
+    count = 0
+    with torch.no_grad():
+        for layer, norm in pairs:
+            x = torch.rand((), generator=generator, device=device).item()
+            if x >= prob:
+                continue  # apply only when x < prob (GAUGE_SCALE_PROB = apply prob)
+
+            has_affine = getattr(norm, "weight", None) is not None
+            sign_draw = torch.rand((), generator=generator, device=device).item()
+            # Negative scale needs an affine gamma to flip; fall back to positive
+            # when the norm has no affine weight so the function stays preserved.
+            sign = -1.0 if (sign_draw < 0.5 and has_affine) else 1.0
+            c = sign * magnitude
+
+            layer.weight.data.mul_(c)
+            if getattr(layer, "bias", None) is not None:
+                layer.bias.data.mul_(c)
+
+            if has_affine:
+                norm.weight.data.mul_(sign)
+            if getattr(norm, "running_mean", None) is not None:
+                norm.running_mean.data.mul_(c)
+            if getattr(norm, "running_var", None) is not None:
+                norm.running_var.data.mul_(c * c)
+            count += 1
+    return count
+
 
 def _apply_function_preserving_permutations(model, generator, device) -> int:
     """Permute as many layers as possible in place; return the count applied."""
