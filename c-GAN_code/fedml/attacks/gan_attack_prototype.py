@@ -61,15 +61,34 @@ class GAN_attack(Filter):
         self.gen_model = gen_model
         """
 
-    def __init__(self, 
-                 gen_configs, 
-                 dis_configs, 
-                 train_configs, 
-                 filter_configs,
+    def __init__(self,
+                 gen_configs = None,
+                 dis_configs = None,
+                 train_configs = None,
+                 filter_configs = None,
                  cuda_device: Optional[str] = "cuda",
                  skip_rounds = 1,
                  random_seed: int = 0,
+                 coordinated_permuter: bool = False,
+                 coordination = None,
+                 permutation_seed: int = 0,
                  ) -> None:
+            # Coordinated PERMUTER attack: the server's only job is to broadcast a
+            # shared permutation seed to all malicious clients each round. No
+            # generator/discriminator, no GAN training, and no synthetic-data
+            # evaluation is needed, so we skip all of that heavy setup here and the
+            # round hooks below short-circuit to the broadcast-only path.
+            #
+            # coordination is either "all" (one shared permutation for the whole
+            # run) or an int N (shared permutation held for N-round cycles, then
+            # recomputed). broadcast_permutation_seed() encodes that into the seed.
+            self._coordinated_permuter = coordinated_permuter
+            if coordinated_permuter:
+                self.coordination = coordination
+                self.permutation_seed = int(permutation_seed)
+                self.skip_rounds = skip_rounds
+                return
+
             self.gen_configs = gen_configs
             self.filter_configs= filter_configs
             self.dis_configs = dis_configs # Or self.dis_model
@@ -130,12 +149,18 @@ class GAN_attack(Filter):
 
     # Wraper methods for server hooks-------------------------------
     def server_fit_round_before(
-              self, 
-              global_parameters, 
-              server_round: int, 
+              self,
+              global_parameters,
+              server_round: int,
               executor,
               client_instructions,
     ):
+        # Coordinated PERMUTER: no generator to train -- just attach the shared
+        # permutation seed to the malicious clients' payloads and return.
+        if getattr(self, "_coordinated_permuter", False):
+            self.broadcast_permutation_seed(client_instructions, server_round)
+            return set()
+
         # Start training of generator from current model parameters
         submitted_fs = {
             executor.submit(self.train_gen, global_parameters, server_round)
@@ -160,7 +185,59 @@ class GAN_attack(Filter):
         return submitted_fs
 
     def server_fit_round_after(self):
+        # Coordinated PERMUTER: nothing to evaluate or log on the server side.
+        if getattr(self, "_coordinated_permuter", False):
+            return self._noop_eval_round, self._noop_log_stats
         return self.eval_gen_attack_round, self.log_gen_attack_stats
+
+    # ---- Coordinated PERMUTER server-side helpers ----
+    def _shared_seed_for_round(self, server_round: int) -> int:
+        """The permutation seed shared by all malicious clients this round.
+
+        * ``coordination == "all"`` -> constant ``permutation_seed`` (one shared
+          permutation for the whole run).
+        * ``coordination == N`` (int) -> ``permutation_seed + cycle`` where
+          ``cycle = (server_round - 1) // N``, so the seed (and hence the
+          permutation) is held fixed for N-round cycles and recomputed each cycle.
+        """
+        if isinstance(self.coordination, int):
+            n = max(int(self.coordination), 1)
+            cycle = (int(server_round) - 1) // n
+            return self.permutation_seed + cycle
+        return self.permutation_seed
+
+    def broadcast_permutation_seed(self, client_instructions, server_round: int):
+        """Attach the shared permutation seed to every malicious client this round.
+
+        client_instructions entries are ``(client, model, device, fitins)``. We set
+        ``fitins.gan_attack_payload.permutation_seed`` to the same value for every
+        malicious client, so all coordinated PERMUTER clients compute the identical
+        function-preserving permutation. The value is constant ("all") or held for
+        N-round cycles -- see _shared_seed_for_round.
+        """
+        seed = self._shared_seed_for_round(server_round)
+        mal_client_ins = [ci for ci in client_instructions if ci[0].client_type != "HONEST"]
+        for _client, _model, _device, fitins in mal_client_ins:
+            fitins.gan_attack_payload = GanAttackFitPayload(
+                permutation_seed=seed,
+            )
+        log(
+            DEBUG,
+            "[CoordinatedPermuter] round %s: broadcast shared permutation seed %s (coordination=%s) to %d malicious clients",
+            server_round,
+            seed,
+            self.coordination,
+            len(mal_client_ins),
+        )
+        return
+
+    def _noop_eval_round(self, server_round: int, results):
+        """No server-side attack evaluation for coordinated PERMUTER."""
+        return [], None
+
+    def _noop_log_stats(self, metrics_aggregated, mal_client_stats, mal_results):
+        """No server-side attack stats for coordinated PERMUTER."""
+        return metrics_aggregated
 
 
     def eval_gen_attack_round(self, server_round: int, results):
